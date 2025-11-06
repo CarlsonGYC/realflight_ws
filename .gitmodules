@@ -21,3 +21,6 @@
 	path = src/ros2-vicon-receiver
 	url = https://github.com/CarlsonGYC/ros2-vicon-receiver.git
 	branch = humble
+[submodule "src/vrpn_mocap"]
+	path = src/vrpn_mocap
+	url = https://github.com/Temasek-Dynamics/vrpn_mocap.git
