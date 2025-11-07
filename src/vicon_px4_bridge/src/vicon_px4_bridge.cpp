@@ -80,10 +80,11 @@ ViconPX4Bridge::ViconPX4Bridge() : Node("vicon_px4_bridge")
     px4_odom_pub_ = this->create_publisher<px4_msgs::msg::VehicleOdometry>(
         px4_topic_name_, 10);
     
+    auto qos_px4 = rclcpp::SensorDataQoS();
     // Create subscriber based on topic type
     if (vicon_topic_type_ == "pose") {
         vicon_pose_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-            vicon_topic_name_, 10,
+            vicon_topic_name_, qos_px4,
             std::bind(&ViconPX4Bridge::viconPoseCallback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "Subscribed to PoseStamped: %s", 
                     vicon_topic_name_.c_str());
