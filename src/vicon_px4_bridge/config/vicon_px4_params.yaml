@@ -10,7 +10,8 @@
     # Frame configuration
     # input_frame options: "ENU", "FLU", "NED"
     # output_frame options: "NED", "ENU", "FLU" (PX4 requires "NED")
-    input_frame: "ENU"
-    # output_frame: "NED"
+    position_origin_frame: "ENU"
+    orientation_origin_frame: "FLU"
+
     position_transform_frame: "NED"
     orientation_transform_frame: "FRD"

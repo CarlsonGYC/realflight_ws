@@ -35,23 +35,36 @@ def generate_launch_description():
         description='PX4 topic name (overrides config file if set)'
     )
     
-    input_frame_arg = DeclareLaunchArgument(
-        'input_frame',
+    # Position origin frame argument
+    position_origin_frame_arg = DeclareLaunchArgument(
+        'position_origin_frame',
         default_value='',
-        description='Input frame: ENU, FLU, or NED (overrides config file if set)'
+        description='Position origin frame: ENU, FLU, NED, or FRD (overrides config file if set)'
     )
     
-    output_frame_arg = DeclareLaunchArgument(
-        'output_frame',
+    # Orientation origin frame argument
+    orientation_origin_frame_arg = DeclareLaunchArgument(
+        'orientation_origin_frame',
         default_value='',
-        description='Output frame: NED, ENU, or FLU (overrides config file if set)'
+        description='Orientation origin frame: ENU, FLU, NED, or FRD (overrides config file if set)'
+    )
+    
+    # Position transform frame argument
+    position_transform_frame_arg = DeclareLaunchArgument(
+        'position_transform_frame',
+        default_value='',
+        description='Position transform frame: ENU, FLU, NED, or FRD (overrides config file if set)'
+    )
+    
+    # Orientation transform frame argument
+    orientation_transform_frame_arg = DeclareLaunchArgument(
+        'orientation_transform_frame',
+        default_value='',
+        description='Orientation transform frame: ENU, FLU, NED, or FRD (overrides config file if set)'
     )
     
     # Build parameters dictionary conditionally
     parameters = [LaunchConfiguration('params_file')]
-    
-    # Optional parameter overrides from command line
-    param_overrides = {}
     
     # Node
     vicon_px4_bridge_node = Node(
@@ -68,7 +81,9 @@ def generate_launch_description():
         params_file_arg,
         vicon_topic_arg,
         px4_topic_arg,
-        input_frame_arg,
-        output_frame_arg,
+        position_origin_frame_arg,
+        orientation_origin_frame_arg,
+        position_transform_frame_arg,
+        orientation_transform_frame_arg,
         vicon_px4_bridge_node
     ])

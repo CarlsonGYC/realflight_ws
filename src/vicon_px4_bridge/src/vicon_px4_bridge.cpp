@@ -6,59 +6,69 @@ ViconPX4Bridge::ViconPX4Bridge() : Node("vicon_px4_bridge")
     this->declare_parameter<std::string>("vicon_topic_name", "/vicon/drone/pose");
     this->declare_parameter<std::string>("px4_topic_name", "/fmu/in/vehicle_visual_odometry");
     this->declare_parameter<std::string>("vicon_topic_type", "pose");
-    this->declare_parameter<std::string>("input_frame", "ENU");
-    this->declare_parameter<std::string>("output_frame", "NED");
+    
+    // Declare separate origin frames for position and orientation
+    this->declare_parameter<std::string>("position_origin_frame", "ENU");
+    this->declare_parameter<std::string>("orientation_origin_frame", "ENU");
     
     // Declare separate transformation parameters for position and orientation
-    this->declare_parameter<std::string>("position_transform_frame", "");
-    this->declare_parameter<std::string>("orientation_transform_frame", "");
+    this->declare_parameter<std::string>("position_transform_frame", "NED");
+    this->declare_parameter<std::string>("orientation_transform_frame", "NED");
     
     // Get parameters
     vicon_topic_name_ = this->get_parameter("vicon_topic_name").as_string();
     px4_topic_name_ = this->get_parameter("px4_topic_name").as_string();
     vicon_topic_type_ = this->get_parameter("vicon_topic_type").as_string();
-    input_frame_ = this->get_parameter("input_frame").as_string();
-    output_frame_ = this->get_parameter("output_frame").as_string();
     
+    std::string position_origin_frame = this->get_parameter("position_origin_frame").as_string();
+    std::string orientation_origin_frame = this->get_parameter("orientation_origin_frame").as_string();
     std::string position_transform_frame = this->get_parameter("position_transform_frame").as_string();
     std::string orientation_transform_frame = this->get_parameter("orientation_transform_frame").as_string();
-    
-    // Use output_frame as default if not specified
-    if (position_transform_frame.empty()) {
-        position_transform_frame = output_frame_;
-    }
-    if (orientation_transform_frame.empty()) {
-        orientation_transform_frame = output_frame_;
-    }
     
     RCLCPP_INFO(this->get_logger(), "=== Vicon PX4 Bridge Configuration ===");
     RCLCPP_INFO(this->get_logger(), "Vicon topic: %s", vicon_topic_name_.c_str());
     RCLCPP_INFO(this->get_logger(), "PX4 topic: %s", px4_topic_name_.c_str());
     RCLCPP_INFO(this->get_logger(), "Topic type: %s", vicon_topic_type_.c_str());
-    RCLCPP_INFO(this->get_logger(), "Input frame: %s", input_frame_.c_str());
     RCLCPP_INFO(this->get_logger(), "Position transformation: %s -> %s", 
-                input_frame_.c_str(), position_transform_frame.c_str());
+                position_origin_frame.c_str(), position_transform_frame.c_str());
     RCLCPP_INFO(this->get_logger(), "Orientation transformation: %s -> %s", 
-                input_frame_.c_str(), orientation_transform_frame.c_str());
+                orientation_origin_frame.c_str(), orientation_transform_frame.c_str());
     
-    // Validate frame types
-    if (input_frame_ != "ENU" && input_frame_ != "FLU" && input_frame_ != "NED") {
-        RCLCPP_ERROR(this->get_logger(), "Invalid input_frame: %s. Must be ENU, FLU, or NED", 
-                     input_frame_.c_str());
-        throw std::runtime_error("Invalid input frame");
+    // Validate frame types for position
+    if (position_origin_frame != "ENU" && position_origin_frame != "FLU" && 
+        position_origin_frame != "NED" && position_origin_frame != "FRD") {
+        RCLCPP_ERROR(this->get_logger(), "Invalid position_origin_frame: %s. Must be ENU, FLU, NED, or FRD", 
+                     position_origin_frame.c_str());
+        throw std::runtime_error("Invalid position origin frame");
     }
     
-    if (output_frame_ != "NED" && output_frame_ != "ENU" && output_frame_ != "FLU") {
-        RCLCPP_ERROR(this->get_logger(), "Invalid output_frame: %s. Must be ENU, FLU, or NED", 
-                     output_frame_.c_str());
-        throw std::runtime_error("Invalid output frame");
+    if (position_transform_frame != "NED" && position_transform_frame != "ENU" && 
+        position_transform_frame != "FLU" && position_transform_frame != "FRD") {
+        RCLCPP_ERROR(this->get_logger(), "Invalid position_transform_frame: %s. Must be ENU, FLU, NED, or FRD", 
+                     position_transform_frame.c_str());
+        throw std::runtime_error("Invalid position transform frame");
+    }
+    
+    // Validate frame types for orientation
+    if (orientation_origin_frame != "ENU" && orientation_origin_frame != "FLU" && 
+        orientation_origin_frame != "NED" && orientation_origin_frame != "FRD") {
+        RCLCPP_ERROR(this->get_logger(), "Invalid orientation_origin_frame: %s. Must be ENU, FLU, NED, or FRD", 
+                     orientation_origin_frame.c_str());
+        throw std::runtime_error("Invalid orientation origin frame");
+    }
+    
+    if (orientation_transform_frame != "NED" && orientation_transform_frame != "ENU" && 
+        orientation_transform_frame != "FLU" && orientation_transform_frame != "FRD") {
+        RCLCPP_ERROR(this->get_logger(), "Invalid orientation_transform_frame: %s. Must be ENU, FLU, NED, or FRD", 
+                     orientation_transform_frame.c_str());
+        throw std::runtime_error("Invalid orientation transform frame");
     }
     
     // Calculate separate transformation matrices for position and orientation
-    R_position_transform_ = getTransformationMatrix(input_frame_, position_transform_frame);
-    R_orientation_transform_ = getTransformationMatrix(input_frame_, orientation_transform_frame);
+    R_position_transform_ = getTransformationMatrix(position_origin_frame, position_transform_frame);
+    R_orientation_transform_ = getTransformationMatrix(orientation_origin_frame, orientation_transform_frame);
     
-    q_orientation_transform_ = getFrameRotation(input_frame_, orientation_transform_frame);
+    q_orientation_transform_ = getFrameRotation(orientation_origin_frame, orientation_transform_frame);
     
     RCLCPP_INFO(this->get_logger(), "Position transformation matrix:");
     RCLCPP_INFO(this->get_logger(), "[%.2f, %.2f, %.2f]", 
@@ -90,7 +100,7 @@ ViconPX4Bridge::ViconPX4Bridge() : Node("vicon_px4_bridge")
                     vicon_topic_name_.c_str());
     } else if (vicon_topic_type_ == "transform") {
         vicon_transform_sub_ = this->create_subscription<geometry_msgs::msg::TransformStamped>(
-            vicon_topic_name_, 10,
+            vicon_topic_name_, qos_px4,
             std::bind(&ViconPX4Bridge::viconTransformCallback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "Subscribed to TransformStamped: %s", 
                     vicon_topic_name_.c_str());
@@ -163,6 +173,46 @@ Eigen::Matrix3d ViconPX4Bridge::getTransformationMatrix(const std::string& from_
                         1,  0,  0,
                         0,  0, -1;
         R = R_ned_to_enu * R_flu_to_ned;
+    }
+    else if (from_frame == "ENU" && to_frame == "FRD") {
+        // ENU to FRD: First ENU->NED, then NED->FRD (same as NED)
+        Eigen::Matrix3d R_enu_to_ned;
+        R_enu_to_ned << 0,  1,  0,
+                        1,  0,  0,
+                        0,  0, -1;
+        R = R_enu_to_ned;
+    }
+    else if (from_frame == "FRD" && to_frame == "ENU") {
+        // FRD to ENU: same as NED to ENU
+        R << 0,  1,  0,
+             1,  0,  0,
+             0,  0, -1;
+    }
+    else if (from_frame == "FLU" && to_frame == "FRD") {
+        // FLU to FRD: Z axis inverted
+        R << 1,  0,  0,
+             0,  1,  0,
+             0,  0, -1;
+    }
+    else if (from_frame == "FRD" && to_frame == "FLU") {
+        // FRD to FLU: Z axis inverted
+        R << 1,  0,  0,
+             0,  1,  0,
+             0,  0, -1;
+    }
+    else if (from_frame == "NED" && to_frame == "FRD") {
+        // NED to FRD: same coordinate system
+        R = Eigen::Matrix3d::Identity();
+    }
+    else if (from_frame == "FRD" && to_frame == "NED") {
+        // FRD to NED: same coordinate system
+        R = Eigen::Matrix3d::Identity();
+    }
+    else {
+        RCLCPP_ERROR(rclcpp::get_logger("vicon_px4_bridge"), 
+                     "Unsupported frame transformation: %s to %s",
+                     from_frame.c_str(), to_frame.c_str());
+        throw std::runtime_error("Unsupported frame transformation");
     }
     
     return R;
