@@ -1,0 +1,14 @@
+/**:
+  ros__parameters:
+    # Vicon topic configuration
+    vicon_topic_name: "/vrpn_mocap/multilift_2/pose"
+    vicon_topic_type: "pose"  # Options: "pose" or "transform"
+    
+    # PX4 topic configuration
+    px4_topic_name: "/fmu/in/vehicle_visual_odometry"
+    
+    # Frame configuration
+    # input_frame options: "ENU", "FLU", "NED"
+    # output_frame options: "NED", "ENU", "FLU" (PX4 requires "NED")
+    input_frame: "ENU"
+    output_frame: "NED"
