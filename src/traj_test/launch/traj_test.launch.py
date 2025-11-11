@@ -12,7 +12,7 @@ def generate_launch_description():
     drone_id_arg = DeclareLaunchArgument(
         'drone_id',
         default_value='0',
-        description='Drone ID (0, 1, 2, ...)'
+        description='Drone ID'
     )
     
     config_file_arg = DeclareLaunchArgument(

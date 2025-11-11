@@ -1,5 +1,5 @@
 // main.cpp  (FULL REPLACEMENT)
-#include "offboard_fsm_node.hpp"
+#include "offboard_state_machine/offboard_fsm_node.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <memory>
 

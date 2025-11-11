@@ -16,11 +16,10 @@ add_executable(offboard_fsm_node
 target_compile_features(offboard_fsm_node PUBLIC cxx_std_17)
 
 target_include_directories(offboard_fsm_node PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/offboard_state_machine>
-  $<INSTALL_INTERFACE:include/offboard_state_machine>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIRS}
 )
-
 
 ament_target_dependencies(offboard_fsm_node
   rclcpp
@@ -33,11 +32,16 @@ ament_target_dependencies(offboard_fsm_node
 install(TARGETS offboard_fsm_node
   DESTINATION lib/${PROJECT_NAME})
 
+# Install headers so other packages can use them
 install(DIRECTORY include/
   DESTINATION include)
 
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
+
+# Export include directories for downstream packages
+ament_export_include_directories(include)
+ament_export_dependencies(rclcpp std_msgs px4_msgs Eigen3)
 
 ament_package()

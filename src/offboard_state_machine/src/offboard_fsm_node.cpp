@@ -1,8 +1,9 @@
-// offboard_fsm_node.cpp – fixed version
+// offboard_fsm_node.cpp
 // Finite-state machine for PX4 offboard control (ROS 2)
 // Author: Yichao Gao 
 
-#include "offboard_fsm_node.hpp"
+#include "offboard_state_machine/offboard_fsm_node.hpp"
+#include "offboard_state_machine/utils.hpp"
 #include <Eigen/Core>
 #include <algorithm>
 #include <chrono>
@@ -20,11 +21,104 @@ static float wrap_pi(float x)
   return x;
 }
 
-// ENU → NED yaw: +90 deg rotation
 static float enu_to_ned_yaw(float yaw_enu)
 {
   float y = yaw_enu + static_cast<float>(M_PI_2);
   return wrap_pi(y);
+}
+
+/* ------------------------------------------------------------------ */
+/*  MJerkSegment Implementation                                       */
+/* ------------------------------------------------------------------ */
+MJerkSegment MJerkSegment::build(
+    const Eigen::Vector3d& p0,
+    const Eigen::Vector3d& v0,
+    const Eigen::Vector3d& a0,
+    const Eigen::Vector3d& pf,
+    const Eigen::Vector3d& vf,
+    const Eigen::Vector3d& af,
+    double T,
+    rclcpp::Time t0)
+{
+  // Solve quintic polynomial for each axis independently
+  auto solve_axis = [](double p0, double v0, double a0, 
+                      double pf, double vf, double af, double T) {
+    Eigen::Matrix<double,6,6> M;
+    M << 1, 0,   0,    0,     0,      0,
+        0, 1,   0,    0,     0,      0,
+        0, 0,   2,    0,     0,      0,
+        1, T, T*T, T*T*T, T*T*T*T, T*T*T*T*T,
+        0, 1, 2*T, 3*T*T, 4*T*T*T, 5*T*T*T*T,
+        0, 0,   2,   6*T,  12*T*T,  20*T*T*T;
+    
+    Eigen::Matrix<double,6,1> b;
+    b << p0, v0, a0, pf, vf, af;
+    Eigen::Matrix<double,6,1> results = M.fullPivLu().solve(b);
+    return results;
+  };
+  
+  MJerkSegment seg;
+  seg.ax = solve_axis(p0.x(), v0.x(), a0.x(), pf.x(), vf.x(), af.x(), T);
+  seg.ay = solve_axis(p0.y(), v0.y(), a0.y(), pf.y(), vf.y(), af.y(), T);
+  seg.az = solve_axis(p0.z(), v0.z(), a0.z(), pf.z(), vf.z(), af.z(), T);
+  seg.t0 = t0;
+  seg.T = T;
+  return seg;
+}
+
+void MJerkSegment::sample(const rclcpp::Time& now,
+                          Eigen::Vector3d& p,
+                          Eigen::Vector3d& v,
+                          Eigen::Vector3d& a) const
+{
+  double t = std::clamp((now - t0).seconds(), 0.0, T);
+  double t2 = t*t, t3 = t2*t, t4 = t3*t, t5 = t4*t;
+  
+  // Evaluate quintic polynomial and derivatives
+  auto eval = [&](const Eigen::Matrix<double,6,1>& c) {
+    double pos = c.coeff(0) + c.coeff(1)*t + c.coeff(2)*t2 + 
+                 c.coeff(3)*t3 + c.coeff(4)*t4 + c.coeff(5)*t5;
+    double vel = c.coeff(1) + 2.0*c.coeff(2)*t + 3.0*c.coeff(3)*t2 + 
+                 4.0*c.coeff(4)*t3 + 5.0*c.coeff(5)*t4;
+    double acc = 2.0*c.coeff(2) + 6.0*c.coeff(3)*t + 12.0*c.coeff(4)*t2 + 
+                 20.0*c.coeff(5)*t3;
+    return std::array<double,3>{pos, vel, acc};
+  };
+  
+  auto rx = eval(ax), ry = eval(ay), rz = eval(az);
+  p = {rx[0], ry[0], rz[0]};
+  v = {rx[1], ry[1], rz[1]};
+  a = {rx[2], ry[2], rz[2]};
+}
+
+bool MJerkSegment::finished(const rclcpp::Time& now) const
+{
+  return (now - t0).seconds() >= T;
+}
+
+double MJerkSegment::get_max_velocity() const
+{
+  // Sample trajectory to find peak velocity magnitude
+  double max_vel_sq = 0.0;
+  const int num_samples = 100;  // Increased for better accuracy
+  
+  for (int i = 0; i <= num_samples; ++i) {
+    double t = T * static_cast<double>(i) / static_cast<double>(num_samples);
+    double t2 = t*t, t3 = t2*t, t4 = t3*t;
+    
+    // Compute velocity at time t
+    double vx = ax.coeff(1) + 2.0*ax.coeff(2)*t + 3.0*ax.coeff(3)*t2 + 
+                4.0*ax.coeff(4)*t3 + 5.0*ax.coeff(5)*t4;
+    double vy = ay.coeff(1) + 2.0*ay.coeff(2)*t + 3.0*ay.coeff(3)*t2 + 
+                4.0*ay.coeff(4)*t3 + 5.0*ay.coeff(5)*t4;
+    double vz = az.coeff(1) + 2.0*az.coeff(2)*t + 3.0*az.coeff(3)*t2 + 
+                4.0*az.coeff(4)*t3 + 5.0*az.coeff(5)*t4;
+    
+    double vel_sq = vx*vx + vy*vy + vz*vz;
+    max_vel_sq = std::max(max_vel_sq, vel_sq);
+  }
+  
+  return std::sqrt(max_vel_sq);
 }
 
 /* ------------------------------------------------------------------ */
@@ -33,8 +127,8 @@ static float enu_to_ned_yaw(float yaw_enu)
 OffboardFSM::OffboardFSM(int drone_id)
 : Node("offboard_fsm_node_" + std::to_string(drone_id))
 , drone_id_(drone_id)
-, takeoff_alt_(declare_parameter("takeoff_alt", 1.51))
-, takeoff_time_s_ (declare_parameter("takeoff_time",    1.0))
+, takeoff_alt_(declare_parameter("takeoff_alt", 1.2))
+, takeoff_time_s_ (declare_parameter("takeoff_time",    3.0))
 , climb_rate_     (declare_parameter("climb_rate",      1.0))  
 , landing_time_s_ (declare_parameter("landing_time",    5.0))
 , circle_radius_  (declare_parameter("circle_radius",   1.4))
@@ -44,22 +138,19 @@ OffboardFSM::OffboardFSM(int drone_id)
 , alt_tol_        (declare_parameter("alt_tol",         0.03))
 , radius_         (declare_parameter("circle_radius_traj", 3.0))
 , period_s_       (declare_parameter("circle_period",   20.0))
-// goto parameters
 , goto_x_       (declare_parameter<double>("goto_x", std::numeric_limits<double>::quiet_NaN()))
 , goto_y_       (declare_parameter<double>("goto_y", std::numeric_limits<double>::quiet_NaN()))
 , goto_z_       (declare_parameter<double>("goto_z", std::numeric_limits<double>::quiet_NaN()))
 , goto_tol_     (declare_parameter("goto_tol", 0.1))
-, goto_max_vel_    (declare_parameter("goto_max_vel", 1.0))    // 1 m/s default
-, goto_accel_time_ (declare_parameter("goto_accel_time", 1.0)) // 1 sec accel
+, goto_max_vel_    (declare_parameter("goto_max_vel", 0.8))  // Reduced for safety
+, goto_accel_time_ (declare_parameter("goto_accel_time", 2.0))
 , in_goto_transition_(false)
 , goto_duration_(0.0)
 , goto_start_x_(0.0)
 , goto_start_y_(0.0)
 , goto_start_z_(0.0)
-// payload offset
 , payload_offset_x_(declare_parameter("payload_offset_x", 0.0))
 , payload_offset_y_(declare_parameter("payload_offset_y", 0.0))
-// initial state
 , current_state_(FsmState::INIT)
 , offb_counter_(0)
 , takeoff_start_count_(0)
@@ -67,15 +158,12 @@ OffboardFSM::OffboardFSM(int drone_id)
 , landing_start_count_(0)
 , use_attitude_control_(false)         
 , odom_ready_(false)
-// hover position
 , hover_x_(0.0)
 , hover_y_(0.0)
 , hover_z_(-1.2)
-// command tracking
 , offboard_cmd_count_(0)
 , arm_cmd_count_(0)
 , last_cmd_time_(0)
-// Initialize other position variables
 , takeoff_pos_x_(0.0)
 , takeoff_pos_y_(0.0)
 , landing_x_(0.0)
@@ -89,23 +177,23 @@ OffboardFSM::OffboardFSM(int drone_id)
 , arming_state_(0)
 , start_time_(std::chrono::steady_clock::now())
 {
-  // Calculate takeoff position
+  // Calculate takeoff position in circular formation
   double theta    = 2.0 * M_PI * drone_id_ / static_cast<double>(num_drones_);
-  double r_target = - inward_offset_;
+  double r_target = -inward_offset_;
   takeoff_pos_x_  =  r_target * std::sin(theta) + payload_offset_x_;
   takeoff_pos_y_  =  r_target * std::cos(theta) + payload_offset_y_;
   
   climb_rate_ = takeoff_alt_ / takeoff_time_s_;
 
   RCLCPP_INFO(get_logger(),
-              "Init FSM for drone %d: take-off to %.2f m",
-              drone_id_, takeoff_alt_);
+              "Init FSM for drone %d: takeoff to %.2f m (max_vel=%.2f m/s)",
+              drone_id_, takeoff_alt_, goto_max_vel_);
 
   // PX4 namespace
   px4_ns_ = (drone_id_ == 0) ? "/fmu/" :
             "/px4_" + std::to_string(drone_id_) + "/fmu/";
 
-  // Publishers with increased QoS
+  // Publishers
   pub_offb_mode_ = create_publisher<OffboardControlMode>(
       px4_ns_ + "in/offboard_control_mode", rclcpp::QoS{10});
   pub_cmd_       = create_publisher<VehicleCommand>(
@@ -128,17 +216,19 @@ OffboardFSM::OffboardFSM(int drone_id)
       px4_ns_ + "out/vehicle_odometry", rclcpp::SensorDataQoS(),
       std::bind(&OffboardFSM::odom_cb, this, std::placeholders::_1));
 
-  // Timer
+  // Timer at 50Hz
   timer_ = create_wall_timer(std::chrono::duration<double>(timer_period_s_),
                              std::bind(&OffboardFSM::timer_cb, this));
 }
 
-uint64_t OffboardFSM::get_timestamp_us()
-{
-  // use chrono to get time since start in microseconds
-  auto now = std::chrono::steady_clock::now();
-  auto duration = now - start_time_;
-  return std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+// uint64_t OffboardFSM::get_timestamp_us()
+// {
+//   auto now = std::chrono::steady_clock::now();
+//   auto duration = now - start_time_;
+//   return std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+// }
+uint64_t OffboardFSM::get_timestamp_us() {
+  return offboard_utils::get_timestamp_us();
 }
 
 /* ------------------------------------------------------------------ */
@@ -152,6 +242,10 @@ void OffboardFSM::status_cb(const VehicleStatus::SharedPtr msg)
 
 void OffboardFSM::odom_cb(const VehicleOdometry::SharedPtr msg)
 {
+  // Use velocity directly from odometry (EKF estimate)
+  current_vel_ = Eigen::Vector3d(msg->velocity[0], msg->velocity[1], msg->velocity[2]);
+  vel_initialized_ = true;
+  
   current_x_ = msg->position[0];
   current_y_ = msg->position[1];
   current_z_ = msg->position[2];
@@ -165,23 +259,26 @@ void OffboardFSM::state_cmd_cb(const std_msgs::msg::Int32::SharedPtr msg)
       s > static_cast<int>(FsmState::DONE))
     return;
 
-  // External state override
-  current_state_ = static_cast<FsmState>(s);
+  FsmState new_state = static_cast<FsmState>(s);
 
   // Handle LAND state
-  if (current_state_ == FsmState::LAND) {
+  if (new_state == FsmState::LAND) {
     landing_start_count_ = offb_counter_;
-    landing_start_z_     = -current_z_;  // Convert to +up
+    landing_start_z_     = -current_z_;
     landing_x_           = current_x_;
     landing_y_           = current_y_;
+    
+    Eigen::Vector3d p_target(current_x_, current_y_, 0.0);
+    start_mjerk_segment(p_target, landing_time_s_);
   }
 
   // Handle TRAJ state
-  if (current_state_ == FsmState::TRAJ) {
+  if (new_state == FsmState::TRAJ) {
     state_start_time_     = now();
     use_attitude_control_ = true;
   }
 
+  current_state_ = new_state;
   RCLCPP_WARN(get_logger(), "External state override → %d", s);
 }
 
@@ -192,231 +289,350 @@ bool OffboardFSM::has_goto_target() const
          std::isfinite(goto_z_);
 }
 
-void OffboardFSM::calculate_goto_ramp(double& pos_x, double& pos_y, double& pos_z,
-                                      double& vel_x, double& vel_y, double& vel_z)
+/* ------------------------------------------------------------------ */
+/*  Calculate Optimal Duration with ITERATIVE Velocity Limiting      */
+/* ------------------------------------------------------------------ */
+double OffboardFSM::calculate_optimal_duration(
+    const Eigen::Vector3d& p_start,
+    const Eigen::Vector3d& p_target,
+    const Eigen::Vector3d& v_start,
+    double max_vel) const
 {
-  // Calculate elapsed time since transition started
-  double t = (now() - goto_start_time_).seconds();
-  double t_norm = std::min(1.0, t / goto_duration_);  // Normalized time [0,1]
+  double dist = (p_target - p_start).norm();
   
-  // Position deltas
-  double dx = goto_x_ - goto_start_x_;
-  double dy = goto_y_ - goto_start_y_;
-  double dz = goto_z_ - goto_start_z_;
-  double total_dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+  // Initial estimate using heuristic formula
+  const double VELOCITY_SCALE_FACTOR = 1.875;
+  double duration = VELOCITY_SCALE_FACTOR * dist / max_vel;
   
-  if (total_dist < 1e-3) {
-    // Already at target
-    pos_x = goto_x_;
-    pos_y = goto_y_;
-    pos_z = goto_z_;
-    vel_x = vel_y = vel_z = 0.0;
-    return;
+  // Account for initial velocity
+  double v0_mag = v_start.norm();
+  if (v0_mag > 0.1) {
+    duration = std::max(duration, (dist + v0_mag * 1.0) / max_vel);
   }
   
-  // Unit direction vector
-  double dir_x = dx / total_dist;
-  double dir_y = dy / total_dist;
-  double dir_z = dz / total_dist;
+  // Minimum duration for safety
+  duration = std::max(duration, std::max(goto_accel_time_, 2.0));
   
-  // Trapezoidal velocity profile
-  double t_accel = goto_accel_time_ / goto_duration_;  // Normalized accel phase
-  double t_decel = 1.0 - t_accel;                      // Normalized decel phase
+  // ========================================================================
+  // CRITICAL FIX: Iteratively adjust duration until velocity is satisfied
+  // ========================================================================
+  const int MAX_ITERATIONS = 15;
+  const double VELOCITY_MARGIN = 0.95;  // Target 95% of max velocity
   
-  double s;        // Position along path [0,1]
-  double s_dot;    // Velocity along path (normalized)
-  
-  if (t_norm < t_accel) {
-    // Acceleration phase: s = 0.5 * a * t^2
-    double ratio = t_norm / t_accel;
-    s = 0.5 * ratio * ratio * t_accel;
-    s_dot = ratio * t_accel / goto_duration_;
-  } else if (t_norm < t_decel) {
-    // Constant velocity phase
-    double cruise_duration = t_decel - t_accel;
-    s = 0.5 * t_accel + (t_norm - t_accel);
-    s_dot = 1.0 / goto_duration_;
-  } else {
-    // Deceleration phase
-    double ratio = (1.0 - t_norm) / t_accel;
-    s = 1.0 - 0.5 * ratio * ratio * t_accel;
-    s_dot = ratio * t_accel / goto_duration_;
+  for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
+    // Build test segment
+    MJerkSegment test_seg = MJerkSegment::build(
+        p_start, 
+        v_start, 
+        Eigen::Vector3d::Zero(),
+        p_target,
+        Eigen::Vector3d::Zero(),
+        Eigen::Vector3d::Zero(),
+        duration,
+        rclcpp::Time(0, 0, RCL_ROS_TIME)  // Dummy time
+    );
+    
+    double actual_max_vel = test_seg.get_max_velocity();
+    
+    // Check if velocity constraint satisfied
+    if (actual_max_vel <= max_vel * 1.05) {  // 5% tolerance
+      RCLCPP_DEBUG(this->get_logger(), 
+                   "Duration converged: %.2fs, v_max=%.3f m/s (iter=%d)",
+                   duration, actual_max_vel, iter);
+      return duration;
+    }
+    
+    // Scale duration proportionally
+    double scale = actual_max_vel / (max_vel * VELOCITY_MARGIN);
+    duration *= scale;
+    
+    // Log progress
+    if (iter % 5 == 0) {
+      RCLCPP_DEBUG(this->get_logger(), 
+                   "Iter %d: v_max=%.3f → adjusting T to %.2fs",
+                   iter, actual_max_vel, duration);
+    }
   }
   
-  // Interpolated position
-  pos_x = goto_start_x_ + s * dx;
-  pos_y = goto_start_y_ + s * dy;
-  pos_z = goto_start_z_ + s * dz;
-  
-  // Velocity = speed * direction
-  double speed = s_dot * total_dist;
-  vel_x = speed * dir_x;
-  vel_y = speed * dir_y;
-  vel_z = speed * dir_z;
+  RCLCPP_WARN(this->get_logger(), 
+              "Duration optimization reached max iterations! Using T=%.2fs",
+              duration);
+  return duration;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Publish trajectory setpoint                                      */
+/*  Start Minimum Jerk Segment with Guaranteed Velocity Limits       */
+/* ------------------------------------------------------------------ */
+void OffboardFSM::start_mjerk_segment(const Eigen::Vector3d& p_target,
+                                      double initial_duration,
+                                      const Eigen::Vector3d& v_target,
+                                      const Eigen::Vector3d& a_target)
+{
+  Eigen::Vector3d p0(current_x_, current_y_, current_z_);
+  
+  // Normalize ground-level position
+  if (std::abs(p0.z()) < 0.05) {
+    p0.z() = 0.0;
+  }
+  
+  Eigen::Vector3d v0 = vel_initialized_ ? current_vel_ : Eigen::Vector3d::Zero();
+  Eigen::Vector3d a0 = Eigen::Vector3d::Zero();
+  
+  // ========================================================================
+  // CRITICAL: Iteratively adjust duration to satisfy velocity limits
+  // ========================================================================
+  double duration = initial_duration;
+  const int MAX_ITERATIONS = 15;
+  
+  for (int iter = 0; iter < MAX_ITERATIONS; ++iter) {
+    // Build candidate segment
+    MJerkSegment candidate = MJerkSegment::build(
+        p0, v0, a0, p_target, v_target, a_target, duration, now());
+    
+    double actual_max_vel = candidate.get_max_velocity();
+    
+    // Check if velocity acceptable (5% margin)
+    if (actual_max_vel <= goto_max_vel_ * 1.05) {
+      active_seg_ = candidate;
+      
+      RCLCPP_INFO(get_logger(), 
+                  "Segment: [%.2f,%.2f,%.2f]→[%.2f,%.2f,%.2f], "
+                  "T=%.2fs, v_max=%.3f m/s (%d iters)",
+                  p0.x(), p0.y(), p0.z(), 
+                  p_target.x(), p_target.y(), p_target.z(), 
+                  duration, actual_max_vel, iter);
+      return;
+    }
+    
+    // Increase duration proportionally
+    double scale = actual_max_vel / (goto_max_vel_ * 0.92);  // Target 92%
+    duration *= scale;
+    
+    RCLCPP_DEBUG(get_logger(), 
+                 "Iter %d: v=%.3f > %.3f, scaling T→%.2fs",
+                 iter, actual_max_vel, goto_max_vel_, duration);
+  }
+  
+  // Failed to converge - use last attempt with warning
+  active_seg_ = MJerkSegment::build(
+      p0, v0, a0, p_target, v_target, a_target, duration, now());
+  
+  double final_vel = active_seg_->get_max_velocity();
+  RCLCPP_WARN(get_logger(), 
+              "Duration optimization failed! T=%.2fs, v_max=%.3f m/s (exceeds %.3f)",
+              duration, final_vel, goto_max_vel_);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Publish Trajectory Setpoint                                      */
 /* ------------------------------------------------------------------ */
 void OffboardFSM::publish_current_setpoint()
 {
-  TrajectorySetpoint sp;
-  
-  // Initialize NaN for unused fields
-  sp.position[0] = 0.0f;
-  sp.position[1] = 0.0f;
-  sp.position[2] = 0.0f;
-  sp.velocity[0] = std::nanf("");
-  sp.velocity[1] = std::nanf("");
-  sp.velocity[2] = std::nanf("");
-  sp.acceleration[0] = std::nanf("");
-  sp.acceleration[1] = std::nanf("");
-  sp.acceleration[2] = std::nanf("");
-  sp.yaw = std::nanf("");
-  sp.yawspeed = std::nanf("");
-  
-  // Set position based on state
-  switch (current_state_) {
-    case FsmState::INIT:
-    case FsmState::ARMING:
-      // Send takeoff position before armed
-      sp.position[0] = takeoff_pos_x_;
-      sp.position[1] = takeoff_pos_y_;
-      sp.position[2] = -0.05f;  // Slightly above ground
-      break;
-      
-    case FsmState::TAKEOFF: {
-      // Smooth takeoff trajectory
-      double elapsed = (offb_counter_ - takeoff_start_count_) * timer_period_s_;
-      double alt_sp = std::min(takeoff_alt_, climb_rate_ * elapsed);
-      sp.position[0] = takeoff_pos_x_;
-      sp.position[1] = takeoff_pos_y_;
-      sp.position[2] = -alt_sp;  // NED: negative is up
-      
-      // Add climb velocity for better tracking
-      if (alt_sp < takeoff_alt_) {
-        sp.velocity[2] = -climb_rate_;  // Climbing (negative in NED)
-      } else {
-        sp.velocity[2] = 0.0f;  // Stop at target altitude
-      }
-      break;
-    }
-    
-    case FsmState::GOTO:
-      if (has_goto_target()) {
-        if (in_goto_transition_) {
-          // Use smooth ramp with position + velocity
-          double ramp_x, ramp_y, ramp_z, vel_x, vel_y, vel_z;
-          calculate_goto_ramp(ramp_x, ramp_y, ramp_z, vel_x, vel_y, vel_z);
-          
-          sp.position[0] = ramp_x;
-          sp.position[1] = ramp_y;
-          sp.position[2] = ramp_z;
-          sp.velocity[0] = vel_x;
-          sp.velocity[1] = vel_y;
-          sp.velocity[2] = vel_z;
-        } else {
-          // Transition complete - hold position
-          sp.position[0] = goto_x_;
-          sp.position[1] = goto_y_;
-          sp.position[2] = goto_z_;
-          sp.velocity[0] = 0.0f;
-          sp.velocity[1] = 0.0f;
-          sp.velocity[2] = 0.0f;
-        }
-      } else {
-        // Fallback to current position
-        sp.position[0] = current_x_;
-        sp.position[1] = current_y_;
-        sp.position[2] = current_z_;
-      }
-      break;
-      
-    case FsmState::HOVER:
-      sp.position[0] = hover_x_;
-      sp.position[1] = hover_y_;
-      sp.position[2] = hover_z_;
-      // Set zero velocity for stable hover
-      sp.velocity[0] = 0.0f;
-      sp.velocity[1] = 0.0f;
-      sp.velocity[2] = 0.0f;
-      break;
-      
-    case FsmState::TRAJ:
-    case FsmState::END_TRAJ:
-      // Maintain hover position
-      sp.position[0] = hover_x_;
-      sp.position[1] = hover_y_;
-      sp.position[2] = hover_z_;
-      break;
-      
-    case FsmState::LAND: {
-      // Smooth landing trajectory
-      double elapsed = (offb_counter_ - landing_start_count_) * timer_period_s_;
-      double descent_rate = landing_start_z_ / landing_time_s_;
-      double alt = std::max(0.0, landing_start_z_ - descent_rate * elapsed);
-      sp.position[0] = landing_x_;
-      sp.position[1] = landing_y_;
-      sp.position[2] = -alt;  // NED
-      
-      // Add descent velocity
-      if (alt > 0.1) {
-        sp.velocity[2] = descent_rate;  // Descending (positive in NED)
-      } else {
-        sp.velocity[2] = 0.0f;
-      }
-      break;
-    }
-    
-    case FsmState::DONE:
-      // Ground position
-      sp.position[0] = landing_x_;
-      sp.position[1] = landing_y_;
-      sp.position[2] = 0.0f;
-      sp.velocity[0] = 0.0f;
-      sp.velocity[1] = 0.0f;
-      sp.velocity[2] = 0.0f;
-      break;
+  if (current_state_ == FsmState::TRAJ) {
+    return;
   }
   
-  // Validate setpoint
+  TrajectorySetpoint sp;
+  
+  // Initialize to NaN
+  for (int i = 0; i < 3; ++i) {
+    sp.position[i] = std::nanf("");
+    sp.velocity[i] = std::nanf("");
+    sp.acceleration[i] = std::nanf("");
+  }
+  // sp.yaw = std::nanf("");
+  // sp.yawspeed = std::nanf("");
+  sp.yaw = 0.0f;
+  sp.yawspeed = 0.0f;
+
+  // Sample from active segment
+  if (active_seg_.has_value()) {
+    Eigen::Vector3d p, v, a;
+    active_seg_->sample(now(), p, v, a);
+    
+    // Ground constraint
+    const double GROUND_TOLERANCE = 0.05;
+    if (p.z() > GROUND_TOLERANCE) {
+      RCLCPP_ERROR(get_logger(), "Correcting +z: %.3f → 0.0", p.z());
+      p.z() = 0.0;
+      v.z() = 0.0;
+      a.z() = 0.0;
+    }
+    
+    sp.position[0] = static_cast<float>(p.x());
+    sp.position[1] = static_cast<float>(p.y());
+    sp.position[2] = static_cast<float>(p.z());
+    sp.velocity[0] = static_cast<float>(v.x());
+    sp.velocity[1] = static_cast<float>(v.y());
+    sp.velocity[2] = static_cast<float>(v.z());
+    sp.acceleration[0] = static_cast<float>(a.x());
+    sp.acceleration[1] = static_cast<float>(a.y());
+    sp.acceleration[2] = static_cast<float>(a.z());
+    
+    // ========================================================================
+    // FIX: Store final setpoint before segment ends
+    // ========================================================================
+    if (active_seg_->finished(now())) {
+      final_position_ = p;
+      final_velocity_ = v;
+      final_acceleration_ = a;
+      has_final_setpoint_ = true;
+      
+      RCLCPP_INFO(get_logger(), "Segment completed - final v=[%.3f, %.3f, %.3f]",
+                  v.x(), v.y(), v.z());
+      active_seg_.reset();
+    }
+  } 
+  // ========================================================================
+  // FIX: Use stored final setpoint immediately after segment
+  // ========================================================================
+  else if (has_final_setpoint_ && 
+           (current_state_ == FsmState::TAKEOFF || 
+            current_state_ == FsmState::GOTO)) {
+    // Use the final values from polynomial for smooth transition
+    sp.position[0] = static_cast<float>(final_position_.x());
+    sp.position[1] = static_cast<float>(final_position_.y());
+    sp.position[2] = static_cast<float>(final_position_.z());
+    sp.velocity[0] = static_cast<float>(final_velocity_.x());
+    sp.velocity[1] = static_cast<float>(final_velocity_.y());
+    sp.velocity[2] = static_cast<float>(final_velocity_.z());
+    sp.acceleration[0] = 0.0f;  // Zero out acceleration after segment
+    sp.acceleration[1] = 0.0f;
+    sp.acceleration[2] = 0.0f;
+    
+    // Clear flag after a short time (100ms)
+    static int hold_count = 0;
+    if (++hold_count > 5) {  // 5 cycles at 50Hz = 100ms
+      has_final_setpoint_ = false;
+      hold_count = 0;
+      RCLCPP_INFO(get_logger(), "Transitioned to steady state");
+    }
+  }
+  else {
+    // Standard fallback for states without segments
+    has_final_setpoint_ = false;  // Clear flag
+    
+    switch (current_state_) {
+      case FsmState::INIT:
+      case FsmState::ARMING:
+        sp.position[0] = static_cast<float>(takeoff_pos_x_);
+        sp.position[1] = static_cast<float>(takeoff_pos_y_);
+        sp.position[2] = -0.05f;
+        sp.velocity[0] = 0.0f;
+        sp.velocity[1] = 0.0f;
+        sp.velocity[2] = 0.0f;
+        break;
+        
+      case FsmState::HOVER:
+      case FsmState::END_TRAJ:
+        sp.position[0] = static_cast<float>(hover_x_);
+        sp.position[1] = static_cast<float>(hover_y_);
+        sp.position[2] = static_cast<float>(hover_z_);
+        sp.velocity[0] = 0.0f;
+        sp.velocity[1] = 0.0f;
+        sp.velocity[2] = 0.0f;
+        break;
+        
+      case FsmState::TAKEOFF:
+        sp.position[0] = static_cast<float>(takeoff_pos_x_);
+        sp.position[1] = static_cast<float>(takeoff_pos_y_);
+        sp.position[2] = static_cast<float>(-takeoff_alt_);  
+        sp.velocity[0] = 0.0f;
+        sp.velocity[1] = 0.0f;
+        sp.velocity[2] = 0.0f;
+        break;
+        
+      case FsmState::GOTO:
+        if (has_goto_target()) {
+          sp.position[0] = static_cast<float>(goto_x_);
+          sp.position[1] = static_cast<float>(goto_y_);
+          sp.position[2] = static_cast<float>(goto_z_);
+        } else if (odom_ready_) {
+          sp.position[0] = static_cast<float>(current_x_);
+          sp.position[1] = static_cast<float>(current_y_);
+          sp.position[2] = static_cast<float>(current_z_);
+        } else {
+          sp.position[0] = 0.0f;
+          sp.position[1] = 0.0f;
+          sp.position[2] = -0.05f;
+        }
+        sp.velocity[0] = 0.0f;
+        sp.velocity[1] = 0.0f;
+        sp.velocity[2] = 0.0f;
+        break;
+        
+      case FsmState::LAND:
+        sp.position[0] = static_cast<float>(landing_x_);
+        sp.position[1] = static_cast<float>(landing_y_);
+        sp.position[2] = 0.0f;
+        sp.velocity[0] = 0.0f;
+        sp.velocity[1] = 0.0f;
+        sp.velocity[2] = 0.0f;
+        break;
+        
+      case FsmState::DONE:
+        sp.position[0] = static_cast<float>(landing_x_);
+        sp.position[1] = static_cast<float>(landing_y_);
+        sp.position[2] = 0.0f;
+        sp.velocity[0] = 0.0f;
+        sp.velocity[1] = 0.0f;
+        sp.velocity[2] = 0.0f;
+        break;
+        
+      case FsmState::TRAJ:
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                             "TRAJ state in fallback");
+        break;
+    }
+  }
+  
+  // Final validation
+  const float GROUND_TOL = 0.05f;
+  if (std::isfinite(sp.position[2]) && sp.position[2] > GROUND_TOL) {
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
+                          "CRITICAL: z=%.3f corrected", sp.position[2]);
+    sp.position[2] = 0.0f;
+    sp.velocity[2] = 0.0f;
+    if (std::isfinite(sp.acceleration[2])) {
+      sp.acceleration[2] = 0.0f;
+    }
+  }
+  
+  // Fallback for NaN
   if (!std::isfinite(sp.position[0]) || 
       !std::isfinite(sp.position[1]) || 
       !std::isfinite(sp.position[2])) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000,
-                          "Invalid setpoint! Using current position.");
+                          "Invalid setpoint!");
     if (odom_ready_) {
-      sp.position[0] = current_x_;
-      sp.position[1] = current_y_;
-      sp.position[2] = current_z_;
+      sp.position[0] = static_cast<float>(current_x_);
+      sp.position[1] = static_cast<float>(current_y_);
+      sp.position[2] = static_cast<float>(std::min(current_z_, 0.0));
     } else {
       sp.position[0] = 0.0f;
       sp.position[1] = 0.0f;
-      sp.position[2] = 0.0f;
+      sp.position[2] = -0.05f;
     }
+    sp.velocity[0] = 0.0f;
+    sp.velocity[1] = 0.0f;
+    sp.velocity[2] = 0.0f;
   }
   
-  sp.timestamp = get_timestamp_us();  // Convert to microseconds
+  sp.timestamp = get_timestamp_us();
   pub_traj_sp_->publish(sp);
 }
 
 /* ------------------------------------------------------------------ */
-/*  Main timer callback                                               */
+/*  Main Timer Callback                                               */
 /* ------------------------------------------------------------------ */
 void OffboardFSM::timer_cb()
 {
-  // CRITICAL: Always publish heartbeat signals first
   publish_offboard_mode();
-  // publish_current_setpoint();
-  if (current_state_ != FsmState::TRAJ) {
-    publish_current_setpoint();
-  }
+  publish_current_setpoint();
   
-  // State machine logic
   switch (current_state_) {
   case FsmState::INIT:
-    // Wait for stable control stream before attempting mode switch
-    if (offb_counter_ >= 20) {  // 400ms of stable signals
+    if (offb_counter_ >= 20) {
       RCLCPP_INFO_ONCE(get_logger(), "Starting arming sequence");
       current_state_ = FsmState::ARMING;
       offb_counter_ = 0;
@@ -428,24 +644,38 @@ void OffboardFSM::timer_cb()
     bool is_armed = (arming_state_ == VehicleStatus::ARMING_STATE_ARMED);
     
     if (is_offboard && is_armed) {
-      // Success
       RCLCPP_INFO(get_logger(), "Drone %d: Armed & Offboard", drone_id_);
       current_state_       = FsmState::TAKEOFF;
       takeoff_start_count_ = offb_counter_;
       last_z_              = current_z_;
+      
+      // Calculate optimal takeoff duration
+      Eigen::Vector3d p_start(current_x_, current_y_, current_z_);
+      Eigen::Vector3d p_target(takeoff_pos_x_, takeoff_pos_y_, -takeoff_alt_);
+      double optimal_duration = calculate_optimal_duration(
+          p_start, p_target, current_vel_, goto_max_vel_);
+      
+      // Use longer of user-specified or optimal duration
+      double actual_duration = std::max(optimal_duration, takeoff_time_s_);
+      
+      start_mjerk_segment(p_target, actual_duration);
+      
+      RCLCPP_INFO(get_logger(), "Takeoff: user=%.2fs, optimal=%.2fs, using=%.2fs",
+                  takeoff_time_s_, optimal_duration, actual_duration);
+      
       offb_counter_        = 0;
       offboard_cmd_count_  = 0;
       arm_cmd_count_       = 0;
     } else {
-      // Send commands with rate limiting
-      if (!is_offboard && offboard_cmd_count_ % 50 == 0) {  // Every 1s
+      // Send mode/arm commands
+      if (!is_offboard && offboard_cmd_count_ % 50 == 0) {
         send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.f, 6.f);
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
                             "Requesting offboard mode...");
       }
       offboard_cmd_count_++;
       
-      if (is_offboard && !is_armed && arm_cmd_count_ % 50 == 0) {  // Every 1s
+      if (is_offboard && !is_armed && arm_cmd_count_ % 50 == 0) {
         send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.f, 0.f);
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
                             "Requesting arm...");
@@ -456,51 +686,46 @@ void OffboardFSM::timer_cb()
   }
 
   case FsmState::TAKEOFF: {
-    double actual_alt = -current_z_;
-    
-    if (takeoff_complete_count_ < 0) {
-      bool alt_ok = actual_alt >= (takeoff_alt_ - alt_tol_);
-      bool vel_ok = std::abs(current_z_ - last_z_) / timer_period_s_ < 0.1;
+    // Wait for segment to complete
+    if (!active_seg_.has_value()) {
+      double actual_alt = -current_z_;
       
-      if (alt_ok && vel_ok) {
-        takeoff_complete_count_ = offb_counter_;
-        RCLCPP_INFO(get_logger(), "Altitude reached: %.2f m", actual_alt);
-      }
-    }
-    
-    if (takeoff_complete_count_ >= 0) {
-      double hover_time = (offb_counter_ - takeoff_complete_count_) * timer_period_s_;
-      if (hover_time >= 5.0) {
-        if (has_goto_target()) {
-          // Store current position as transition start
-          goto_start_x_ = current_x_;
-          goto_start_y_ = current_y_;
-          goto_start_z_ = current_z_;
-          goto_start_time_ = now();
-          
-          // Calculate transition duration based on distance
-          double dx = goto_x_ - current_x_;
-          double dy = goto_y_ - current_y_;
-          double dz = goto_z_ - current_z_;
-          double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-          
-          // Duration = accel time + cruise time + decel time
-          double cruise_dist = std::max(0.0, dist - goto_max_vel_ * goto_accel_time_);
-          goto_duration_ = 2.0 * goto_accel_time_ + cruise_dist / goto_max_vel_;
-          
-          in_goto_transition_ = true;
-          current_state_ = FsmState::GOTO;
-          RCLCPP_INFO(get_logger(), "Starting GOTO transition (%.2f m, %.1f s)", 
-                      dist, goto_duration_);
-        } else {
-          hover_x_ = takeoff_pos_x_;
-          hover_y_ = takeoff_pos_y_;
-          hover_z_ = -takeoff_alt_;
-          current_state_ = FsmState::HOVER;
-          RCLCPP_INFO(get_logger(), "Entering HOVER mode");
+      if (takeoff_complete_count_ < 0) {
+        bool alt_ok = actual_alt >= (takeoff_alt_ - alt_tol_);
+        bool vel_ok = std::abs(current_z_ - last_z_) / timer_period_s_ < 0.1;
+        
+        if (alt_ok && vel_ok) {
+          takeoff_complete_count_ = offb_counter_;
+          RCLCPP_INFO(get_logger(), "Altitude reached: %.2f m", actual_alt);
         }
-        state_start_time_ = now();
-        offb_counter_ = 0;
+      }
+      
+      // Settle before next action
+      if (takeoff_complete_count_ >= 0) {
+        double hover_time = (offb_counter_ - takeoff_complete_count_) * timer_period_s_;
+        if (hover_time >= 2.0) {
+          if (has_goto_target()) {
+            Eigen::Vector3d p_start(current_x_, current_y_, current_z_);
+            Eigen::Vector3d p_target(goto_x_, goto_y_, goto_z_);
+            
+            double duration = calculate_optimal_duration(
+                p_start, p_target, current_vel_, goto_max_vel_);
+            
+            start_mjerk_segment(p_target, duration);
+            
+            double dist = (p_target - p_start).norm();
+            current_state_ = FsmState::GOTO;
+            RCLCPP_INFO(get_logger(), "GOTO: dist=%.2fm, T=%.1fs", dist, duration);
+          } else {
+            hover_x_ = takeoff_pos_x_;
+            hover_y_ = takeoff_pos_y_;
+            hover_z_ = -takeoff_alt_;
+            current_state_ = FsmState::HOVER;
+            RCLCPP_INFO(get_logger(), "Entering HOVER");
+          }
+          state_start_time_ = now();
+          offb_counter_ = 0;
+        }
       }
     }
     
@@ -514,57 +739,49 @@ void OffboardFSM::timer_cb()
       hover_y_ = current_y_;
       hover_z_ = current_z_;
       current_state_ = FsmState::HOVER;
-      RCLCPP_WARN(get_logger(), "No GOTO target, switching to HOVER");
+      RCLCPP_WARN(get_logger(), "No target, switching to HOVER");
       break;
     }
 
-    if (in_goto_transition_) {
-      // Check if ramp is complete
-      double elapsed = (now() - goto_start_time_).seconds();
-      if (elapsed >= goto_duration_) {
-        in_goto_transition_ = false;
-        RCLCPP_INFO(get_logger(), "GOTO ramp complete, holding position");
-      }
-    } else {
-      // Check if at target (position hold phase)
+    // Check if segment completed
+    if (!active_seg_.has_value()) {
       double dx = current_x_ - goto_x_;
       double dy = current_y_ - goto_y_;
       double dz = current_z_ - goto_z_;
       double dist = std::sqrt(dx*dx + dy*dy + dz*dz);
       
       if (dist < goto_tol_) {
-        RCLCPP_INFO(get_logger(), "GOTO target reached (error: %.3f m)", dist);
+        RCLCPP_INFO(get_logger(), "GOTO reached (err: %.3fm)", dist);
         hover_x_ = goto_x_;
         hover_y_ = goto_y_;
         hover_z_ = goto_z_;
         current_state_ = FsmState::HOVER;
         state_start_time_ = now();
         offb_counter_ = 0;
+      } else {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                             "Segment ended but err=%.3fm", dist);
       }
     }
     break;
   }
 
   case FsmState::HOVER:
-    // Just hover at position
     if (use_attitude_control_) {
       use_attitude_control_ = false;
-      RCLCPP_INFO(get_logger(), "Switched to position control");
+      RCLCPP_INFO(get_logger(), "Position control mode");
     }
     break;
 
   case FsmState::TRAJ:
-    // Trajectory mode (future implementation)
     if (!use_attitude_control_) {
       use_attitude_control_ = true;
       state_start_time_ = now();
-      RCLCPP_INFO(get_logger(), "Switched to attitude control");
+      RCLCPP_INFO(get_logger(), "Attitude control mode");
     }
-    // generate_trajectory(); // Uncomment when implemented
     break;
 
   case FsmState::END_TRAJ:
-    // End trajectory
     if (use_attitude_control_) {
       use_attitude_control_ = false;
       state_start_time_ = now();
@@ -573,20 +790,18 @@ void OffboardFSM::timer_cb()
     break;
 
   case FsmState::LAND: {
-    double elapsed = (offb_counter_ - landing_start_count_) * timer_period_s_;
-    double alt = -current_z_;  // Convert to +up
-    
-    if (alt <= 0.15 || elapsed >= landing_time_s_) {
-      RCLCPP_INFO(get_logger(), "Drone %d landed", drone_id_);
-      current_state_ = FsmState::DONE;
-      // Disarm
-      send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.f, 0.f);
+    if (!active_seg_.has_value()) {
+      double alt = -current_z_;
+      if (alt <= 0.15) {
+        RCLCPP_INFO(get_logger(), "Landed");
+        current_state_ = FsmState::DONE;
+        send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.f, 0.f);
+      }
     }
     break;
   }
 
   case FsmState::DONE:
-    // Stay on ground
     break;
   }
 
@@ -599,24 +814,31 @@ void OffboardFSM::timer_cb()
 }
 
 /* ------------------------------------------------------------------ */
-/*  Publish offboard control mode                                    */
+/*  Publish Offboard Control Mode                                    */
 /* ------------------------------------------------------------------ */
 void OffboardFSM::publish_offboard_mode()
 {
   OffboardControlMode m;
   
-  // Different control modes for different states
+  bool has_active_seg = active_seg_.has_value();
+  
   if (current_state_ == FsmState::TRAJ) {
-    // Attitude control for trajectory tracking
+    // External trajectory control
     m.position     = true;
-    m.velocity     = true;
+    m.velocity     = false;
     m.acceleration = false;
-    m.attitude     = false;   // Control attitude + thrust
+    m.attitude     = false;
+    m.body_rate    = false;
+  } else if (has_active_seg) {
+    // Minimum jerk trajectory with feedforward
+    m.position     = true;
+    m.velocity     = false;
+    m.acceleration = false;
+    m.attitude     = false;
     m.body_rate    = false;
   } else {
-    // Position/velocity control for all other states
     m.position     = true;
-    m.velocity     = true;
+    m.velocity     = false;
     m.acceleration = false;
     m.attitude     = false;
     m.body_rate    = false;
@@ -626,17 +848,14 @@ void OffboardFSM::publish_offboard_mode()
   pub_offb_mode_->publish(m);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Send vehicle command                                             */
-/* ------------------------------------------------------------------ */
 void OffboardFSM::send_vehicle_cmd(uint16_t cmd, float p1, float p2)
 {
   VehicleCommand m;
   m.command       = cmd;
   m.param1        = p1;
   m.param2        = p2;
-  m.target_system = drone_id_ + 1;  // PX4 system ID
-  m.target_component = 1;  // Autopilot component
+  m.target_system = drone_id_ + 1;
+  m.target_component = 1;
   m.source_system = 1;
   m.source_component = 1;
   m.from_external = true;
@@ -644,20 +863,19 @@ void OffboardFSM::send_vehicle_cmd(uint16_t cmd, float p1, float p2)
   pub_cmd_->publish(m);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Try to set offboard and arm (deprecated - use separate calls)   */
-/* ------------------------------------------------------------------ */
 void OffboardFSM::try_set_offboard_and_arm()
 {
-  // This function is deprecated - use rate-limited calls in ARMING state
   send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.f, 6.f);
   send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.f, 0.f);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Trajectory generator placeholder                                 */
-/* ------------------------------------------------------------------ */
 void OffboardFSM::generate_trajectory()
 {
-  // Future implementation for trajectory generation
+  // Future implementation
+}
+
+void OffboardFSM::calculate_goto_ramp(double& pos_x, double& pos_y, double& pos_z,
+                                      double& vel_x, double& vel_y, double& vel_z)
+{
+  // Deprecated
 }

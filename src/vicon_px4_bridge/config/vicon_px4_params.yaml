@@ -1,4 +1,4 @@
-/**:
+vicon_px4_bridge:
   ros__parameters:
     # Vicon topic configuration
     vicon_topic_name: "/vrpn_mocap/multilift_2/pose"

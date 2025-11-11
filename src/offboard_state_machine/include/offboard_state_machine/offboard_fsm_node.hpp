@@ -7,6 +7,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <Eigen/Dense>
+#include <optional>
 
 // Include full headers instead of forward declarations
 #include <px4_msgs/msg/vehicle_status.hpp>
@@ -17,17 +19,54 @@
 
 // FSM states
 enum class FsmState {
-  INIT = 0,      // Initialize offboard stream
-  ARMING = 1,    // Switch to offboard & arm
-  TAKEOFF = 2,   // Take off to target altitude
-  GOTO = 3,      // Go to specified position
-  HOVER = 4,     // Hover at current position
-  TRAJ = 5,      // Follow trajectory
-  END_TRAJ = 6,  // End trajectory mode
-  LAND = 7,      // Landing
-  DONE = 8       // Landed & disarmed
+  INIT = 0,
+  ARMING = 1,
+  TAKEOFF = 2,
+  GOTO = 3,
+  HOVER = 4,
+  TRAJ = 5,
+  END_TRAJ = 6,
+  LAND = 7,
+  DONE = 8
 };
 
+// ============================================================================
+// MINIMUM JERK TRAJECTORY SEGMENT - FULL DEFINITION IN HEADER
+// ============================================================================
+// This must be a complete type (not forward declaration) because std::optional
+// needs to know the size and layout of the type at compile time
+struct MJerkSegment {
+  Eigen::Matrix<double,6,1> ax, ay, az;  // Quintic polynomial coefficients
+  rclcpp::Time t0;                        // Start time
+  double T{0.0};                          // Duration
+  // Static factory method to build a minimum jerk trajectory
+  // Solves the boundary value problem for position, velocity, and acceleration
+  static MJerkSegment build(
+      const Eigen::Vector3d& p0,  // Initial position
+      const Eigen::Vector3d& v0,  // Initial velocity
+      const Eigen::Vector3d& a0,  // Initial acceleration
+      const Eigen::Vector3d& pf,  // Final position
+      const Eigen::Vector3d& vf,  // Final velocity (usually zero)
+      const Eigen::Vector3d& af,  // Final acceleration (usually zero)
+      double T,                    // Duration
+      rclcpp::Time t0);           // Start time
+  
+  // Sample the trajectory at a given time
+  void sample(const rclcpp::Time& now,
+              Eigen::Vector3d& p,
+              Eigen::Vector3d& v,
+              Eigen::Vector3d& a) const;
+  
+  // Check if trajectory is complete
+  bool finished(const rclcpp::Time& now) const;
+  
+  // Get maximum velocity magnitude along the trajectory
+  double get_max_velocity() const;
+};
+
+// ============================================================================
+// OFFBOARD FSM CLASS
+// ============================================================================
 class OffboardFSM : public rclcpp::Node
 {
 public:
@@ -47,9 +86,23 @@ private:
   void try_set_offboard_and_arm();
   void generate_trajectory();
   bool has_goto_target() const;
-  void calculate_goto_ramp(double& pos_x, double& pos_y, double& pos_z,
-                         double& vel_x, double& vel_y, double& vel_z);
   uint64_t get_timestamp_us();
+  
+  // Minimum jerk trajectory planning
+  void start_mjerk_segment(const Eigen::Vector3d& p_target,
+                           double duration,
+                           const Eigen::Vector3d& v_target = Eigen::Vector3d::Zero(),
+                           const Eigen::Vector3d& a_target = Eigen::Vector3d::Zero());
+  
+  // Calculate optimal duration to respect velocity limits
+  double calculate_optimal_duration(const Eigen::Vector3d& p_start,
+                                   const Eigen::Vector3d& p_target,
+                                   const Eigen::Vector3d& v_start,
+                                   double max_vel) const;
+  
+  // Deprecated - kept for compatibility
+  void calculate_goto_ramp(double& pos_x, double& pos_y, double& pos_z,
+                          double& vel_x, double& vel_y, double& vel_z);
   
   // Publishers
   rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr pub_offb_mode_;
@@ -84,13 +137,12 @@ private:
   double goto_y_;
   double goto_z_;
   double goto_tol_;
-  // GOTO transition parameters
-  double goto_max_vel_;              // Max velocity during GOTO transitions
-  double goto_accel_time_;           // Time to accelerate to max velocity
-  rclcpp::Time goto_start_time_;     // Transition start time
-  double goto_start_x_, goto_start_y_, goto_start_z_;  // Transition start position
-  double goto_duration_;             // Total transition duration (calculated)
-  bool in_goto_transition_;          // True during position/velocity ramp phase
+  double goto_max_vel_;              // Maximum velocity constraint
+  double goto_accel_time_;           // Minimum duration parameter
+  rclcpp::Time goto_start_time_;
+  double goto_start_x_, goto_start_y_, goto_start_z_;
+  double goto_duration_;
+  bool in_goto_transition_;
   
   // Payload offset
   double payload_offset_x_;
@@ -135,8 +187,24 @@ private:
   // Time tracking
   rclcpp::Time state_start_time_;
   std::chrono::steady_clock::time_point start_time_;
+  
   // Namespace
   std::string px4_ns_;
+
+  Eigen::Vector3d final_position_{0, 0, 0};
+  Eigen::Vector3d final_velocity_{0, 0, 0};
+  Eigen::Vector3d final_acceleration_{0, 0, 0};
+  bool has_final_setpoint_{false};
+  
+  // ========================================================================
+  // MINIMUM JERK TRAJECTORY STATE
+  // ========================================================================
+  std::optional<MJerkSegment> active_seg_;  // Current trajectory segment
+  
+  // Velocity estimation for smooth transitions
+  Eigen::Vector3d current_vel_{0.0, 0.0, 0.0};
+  Eigen::Vector3d last_pos_{0.0, 0.0, 0.0};
+  bool vel_initialized_{false};
 };
 
 #endif  // OFFBOARD_FSM_NODE_HPP_

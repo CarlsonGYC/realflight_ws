@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
+find_package(offboard_state_machine REQUIRED)
 
 include_directories(
   include
@@ -24,6 +25,11 @@ ament_target_dependencies(traj_test_node
   rclcpp
   std_msgs
   px4_msgs
+  offboard_state_machine
+)
+
+install(DIRECTORY include/
+  DESTINATION include
 )
 
 # Install targets

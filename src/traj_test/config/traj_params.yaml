@@ -3,15 +3,13 @@
 
 /**:
   ros__parameters:
-
-    drone_id: 0  # Set this for each drone (0, 1, 2, ...)
-    circle_radius: 1.50              # Radius of circular trajectory [m]
-    circle_center_x: 0.0            # North position of center [m]
-    circle_center_y: 0.0            # East position of center [m]
-    circle_center_z: -1.5           # Down position of center [m] (negative = up!)
-    circle_duration: 3.0           # Time for one complete circle at constant speed [s]
-    circle_times: 2
-    ramp_up_time: 6.0               # Time to accelerate from 0 to max speed [s]
-    ramp_down_time: 6.0             # Time to decelerate from max to 0 [s]
-    max_speed: -1.0                 # Maximum linear velocity [m/s] (-1 = no limit)
-    timer_period: 0.02              # Control loop period [s] (50 Hz default)
+    circle_radius: 1.5
+    circle_center_x: 0.0
+    circle_center_y: 0.0
+    circle_center_z: -1.5
+    circle_init_phase: 3.1415926
+    circle_times: 5
+    circle_duration: 3.0
+    ramp_up_time: 6.0
+    ramp_down_time: 6.0
+    timer_period: 0.01
