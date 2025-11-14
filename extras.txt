@@ -1,0 +1,86 @@
+#!/bin/sh
+# Custom DDS startup with namespace matching SITL behavior
+# MAV_SYS_ID=1 -> no namespace, MAV_SYS_ID>1 -> px4_{ID-1}
+
+sleep 3
+
+# Check if DDS is configured (exit if disabled)
+if param compare UXRCE_DDS_CFG 0
+then
+    exit 0
+fi
+
+# Stop default client
+uxrce_dds_client stop 2>/dev/null
+sleep 1
+
+# Determine namespace based on MAV_SYS_ID (matching SITL)
+set DDS_NS ""
+
+if param compare MAV_SYS_ID 2
+then
+    set DDS_NS "-n px4_1"
+fi
+
+if param compare MAV_SYS_ID 3
+then
+    set DDS_NS "-n px4_2"
+fi
+
+if param compare MAV_SYS_ID 4
+then
+    set DDS_NS "-n px4_3"
+fi
+
+if param compare MAV_SYS_ID 5
+then
+    set DDS_NS "-n px4_4"
+fi
+
+if param compare MAV_SYS_ID 6
+then
+    set DDS_NS "-n px4_5"
+fi
+
+if param compare MAV_SYS_ID 7
+then
+    set DDS_NS "-n px4_6"
+fi
+
+if param compare MAV_SYS_ID 8
+then
+    set DDS_NS "-n px4_7"
+fi
+
+if param compare MAV_SYS_ID 9
+then
+    set DDS_NS "-n px4_8"
+fi
+
+if param compare MAV_SYS_ID 10
+then
+    set DDS_NS "-n px4_9"
+fi
+
+# Start DDS client on TELEM2 (ttyS3)
+if param compare UXRCE_DDS_CFG 102
+then
+    uxrce_dds_client start -t serial -d /dev/ttyS3 -b 921600 ${DDS_NS}
+fi
+
+# Start DDS client on TELEM3 (ttyS6)
+if param compare UXRCE_DDS_CFG 103
+then
+    uxrce_dds_client start -t serial -d /dev/ttyS6 -b 921600 ${DDS_NS}
+fi
+
+# Start DDS client on UDP
+if param compare UXRCE_DDS_CFG 1000
+then
+    uxrce_dds_client start -t udp -p 8888 ${DDS_NS}
+fi
+
+sleep 1
+uxrce_dds_client status
+
+unset DDS_NS

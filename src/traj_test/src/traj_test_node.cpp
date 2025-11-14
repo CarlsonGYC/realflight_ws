@@ -40,7 +40,15 @@ TrajTestNode::TrajTestNode(int drone_id)
   effective_duration_ = calculate_effective_duration();
   max_angular_vel_ = 2.0 * M_PI / effective_duration_;
   angular_acceleration_ = max_angular_vel_ / ramp_up_time_;
-  total_constant_duration_ = effective_duration_ * circle_times_;
+  double theta_ramp_up = 0.5 * max_angular_vel_ * ramp_up_time_;
+  double theta_ramp_down = 0.5 * max_angular_vel_ * ramp_down_time_;
+  double theta_ramps_total = theta_ramp_up + theta_ramp_down;
+  // Total required angular displacement for N complete circles
+  double theta_required = circle_times_ * 2.0 * M_PI;
+  // Angular displacement needed during constant velocity phase
+  double theta_constant = theta_required - theta_ramps_total;
+  // Time needed at constant velocity to cover theta_constant
+  total_constant_duration_ = theta_constant / max_angular_vel_;
   
   RCLCPP_INFO(this->get_logger(), 
               "=== Trajectory Test Node for Drone %d ===", drone_id_);
@@ -70,10 +78,13 @@ TrajTestNode::TrajTestNode(int drone_id)
     std::bind(&TrajTestNode::odom_callback, this, std::placeholders::_1));
   
   // Timer using node clock (respects use_sim_time)
-  timer_ = this->create_wall_timer(
-    std::chrono::duration<double>(timer_period_),
-    std::bind(&TrajTestNode::timer_callback, this),
-    nullptr);
+  timer_ = rclcpp::create_timer(
+      this,
+      this->get_clock(),
+      rclcpp::Duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(timer_period_)
+      )),
+      std::bind(&TrajTestNode::timer_callback, this));
     
   RCLCPP_INFO(this->get_logger(), "Timer initialized at %.0f Hz", 1.0/timer_period_);
 }
@@ -108,6 +119,7 @@ double TrajTestNode::calculate_theta_at_time(double t)
   double theta = 0.0;
   double omega_max = max_angular_vel_;
   double alpha = angular_acceleration_;
+  double alpha_down = omega_max / ramp_down_time_; 
   double t_up = ramp_up_time_;
   double t_const = total_constant_duration_;  
   double t_down = ramp_down_time_;
@@ -129,14 +141,13 @@ double TrajTestNode::calculate_theta_at_time(double t)
     
     double t_start_down = t_up + t_const;
     double dt = t - t_start_down;
-    
-    theta = theta_at_start_down + omega_max * dt - 0.5 * alpha * dt * dt;
+    theta = theta_at_start_down + omega_max * dt - 0.5 * alpha_down * dt * dt;
   }
   // Phase 4: Hold final position
   else {
     double theta_at_t_up = 0.5 * alpha * t_up * t_up;
     double theta_at_start_down = theta_at_t_up + omega_max * t_const;
-    theta = theta_at_start_down + omega_max * t_down - 0.5 * alpha * t_down * t_down;
+    theta = theta_at_start_down + omega_max * t_down - 0.5 * alpha_down * t_down * t_down;
   }
   
   return theta;
@@ -146,6 +157,7 @@ double TrajTestNode::calculate_angular_velocity_at_time(double t)
 {
   double omega_max = max_angular_vel_;
   double alpha = angular_acceleration_;
+  double alpha_down = omega_max / ramp_down_time_;
   double t_up = ramp_up_time_;
   double t_const = total_constant_duration_;
   double t_down = ramp_down_time_;
@@ -161,7 +173,7 @@ double TrajTestNode::calculate_angular_velocity_at_time(double t)
   }
   else if (t <= t_start_down + t_down) {
     double dt_down = t - t_start_down;
-    current_omega = omega_max - alpha * dt_down;
+    current_omega = omega_max - alpha_down * dt_down;  // Use correct deceleration
     current_omega = std::max(0.0, current_omega);
   }
   else {

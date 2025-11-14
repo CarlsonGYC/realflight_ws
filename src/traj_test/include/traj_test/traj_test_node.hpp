@@ -8,6 +8,7 @@
 #include "offboard_state_machine/utils.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 
 class TrajTestNode : public rclcpp::Node
