@@ -128,7 +128,7 @@ private:
   double alt_tol_;
   double radius_;
   double period_s_;
-  
+  bool initial_arming_complete_; 
   // GOTO parameters
   double goto_x_;
   double goto_y_;

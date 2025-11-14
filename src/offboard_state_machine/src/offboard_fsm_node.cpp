@@ -143,6 +143,7 @@ OffboardFSM::OffboardFSM(int drone_id)
 , alt_tol_        (declare_parameter("alt_tol",         0.03))
 , radius_         (declare_parameter("circle_radius_traj", 3.0))
 , period_s_       (declare_parameter("circle_period",   20.0))
+, initial_arming_complete_(false)
 , goto_x_       (declare_parameter<double>("goto_x", std::numeric_limits<double>::quiet_NaN()))
 , goto_y_       (declare_parameter<double>("goto_y", std::numeric_limits<double>::quiet_NaN()))
 , goto_z_       (declare_parameter<double>("goto_z", std::numeric_limits<double>::quiet_NaN()))
@@ -617,6 +618,7 @@ void OffboardFSM::timer_cb()
     bool is_armed = (arming_state_ == VehicleStatus::ARMING_STATE_ARMED);
     
     if (is_offboard && is_armed) {
+      initial_arming_complete_ = true;
       RCLCPP_INFO(get_logger(), "Drone %d armed in offboard", drone_id_);
       current_state_       = FsmState::TAKEOFF;
       takeoff_start_count_ = offb_counter_;
@@ -636,13 +638,13 @@ void OffboardFSM::timer_cb()
       offboard_cmd_count_  = 0;
       arm_cmd_count_       = 0;
     } else {
-      if (!is_offboard && offboard_cmd_count_ % 50 == 0) {
+      if (!is_offboard && !initial_arming_complete_ && offboard_cmd_count_ % 50 == 0) {
         send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.f, 6.f);
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Req offboard");
       }
       offboard_cmd_count_++;
       
-      if (is_offboard && !is_armed && arm_cmd_count_ % 50 == 0) {
+      if (is_offboard && !initial_arming_complete_ && !is_armed && arm_cmd_count_ % 50 == 0) {
         send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.f, 0.f);
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Req arm");
       }
