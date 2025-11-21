@@ -1,6 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, EnvironmentVariable
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, EnvironmentVariable, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterFile 
@@ -27,6 +27,18 @@ def generate_launch_description():
     
     vicon_topic_name = ['/vrpn_mocap/', drone_name_vicon, '/pose']
 
+    drone_id = EnvironmentVariable(
+        'DRONE_ID',
+        default_value='0'   # change this default if you like
+    )
+
+    px4_topic_name_prefix = PythonExpression([
+        "'' if '", drone_id, "' == '0' else '/px4_' + '", drone_id, "'"
+    ])
+
+    px4_topic_name = [px4_topic_name_prefix, '/fmu/in/vehicle_visual_odometry']
+
+
     vicon_px4_bridge_node = Node(
         package='vicon_px4_bridge',
         executable='vicon_px4_bridge_node',
@@ -35,7 +47,8 @@ def generate_launch_description():
         parameters=[
             ParameterFile(config_file, allow_substs=True),
             {
-                'vicon_topic_name': vicon_topic_name
+                'vicon_topic_name': vicon_topic_name,
+                'px4_topic_name': px4_topic_name
             },
         ],
     )

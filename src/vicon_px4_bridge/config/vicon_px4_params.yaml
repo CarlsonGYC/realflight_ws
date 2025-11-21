@@ -1,7 +1,7 @@
 vicon_px4_bridge:
   ros__parameters:
     # Vicon topic configuration
-    vicon_topic_name: "/vrpn_mocap/multilift_2/pose"
+    vicon_topic_name: "/vrpn_mocap/multilift_0/pose"
     vicon_topic_type: "pose"  # Options: "pose" or "transform"
     
     # PX4 topic configuration
