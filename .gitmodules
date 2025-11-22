@@ -1,0 +1,26 @@
+[submodule "src/px4_msgs"]
+	path = src/px4_msgs
+	url = https://github.com/PX4/px4_msgs.git
+	branch = release/1.16
+
+[submodule "src/px4_ros_com"]
+	path = src/px4_ros_com
+	url = https://github.com/PX4/px4_ros_com.git
+	branch = release/1.16
+
+# [submodule "src/px4-ros2-interface-lib"]
+# 	path = src/px4-ros2-interface-lib
+# 	url = https://github.com/Auterion/px4-ros2-interface-lib.git
+# 	branch = release/1.16 
+
+# [submodule "src/mocap_px4_bridge"]
+# 	path = src/mocap_px4_bridge
+# 	url = https://github.com/SaxionMechatronics/mocap_px4_bridge.git
+# 	branch = master
+# [submodule "src/ros2-vicon-receiver"]
+# 	path = src/ros2-vicon-receiver
+# 	url = https://github.com/CarlsonGYC/ros2-vicon-receiver.git
+# 	branch = humble
+[submodule "src/vrpn_mocap"]
+	path = src/vrpn_mocap
+	url = https://github.com/Temasek-Dynamics/vrpn_mocap.git

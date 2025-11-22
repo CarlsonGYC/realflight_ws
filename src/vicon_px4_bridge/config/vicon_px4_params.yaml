@@ -1,0 +1,19 @@
+vicon_px4_bridge:
+  ros__parameters:
+    # Vicon topic configuration
+    vicon_topic_name: "/vrpn_mocap/multilift_0/pose"
+    vicon_topic_type: "pose"  # Options: "pose" or "transform"
+    
+    # PX4 topic configuration
+    px4_topic_name: "/fmu/in/vehicle_visual_odometry"
+    
+    
+    # World coordinate frame transformation
+    # Common options: "ENU" (East-North-Up), "NED" (North-East-Down)
+    input_world_frame: "ENU"    # Vicon typically uses ENU
+    output_world_frame: "NED"   # PX4 requires NED
+    
+    # Body coordinate frame transformation
+    # Common options: "FLU" (Forward-Left-Up), "FRD" (Forward-Right-Down)
+    input_body_frame: "FLU"     # Vicon/ROS typically uses FLU
+    output_body_frame: "FRD"    # PX4 requires FRD

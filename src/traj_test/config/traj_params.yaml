@@ -1,0 +1,16 @@
+# Trajectory Test Configuration
+# All spatial units in meters, time in seconds, angles in radians
+
+/**:
+  ros__parameters:
+    circle_radius: 1.5
+    circle_center_x: 0.0
+    circle_center_y: 0.0
+    circle_center_z: -1.2
+    # circle_init_phase: 3.1415926
+    circle_init_phase: 0.0
+    circle_times: 4
+    circle_duration: 4.0
+    ramp_up_time: 8.0
+    ramp_down_time: 8.0
+    timer_period: 0.01
