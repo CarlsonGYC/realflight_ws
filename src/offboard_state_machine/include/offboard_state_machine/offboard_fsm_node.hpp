@@ -89,7 +89,8 @@ private:
   void start_mjerk_segment(const Eigen::Vector3d& p_target,
                            double duration,
                            const Eigen::Vector3d& v_target = Eigen::Vector3d::Zero(),
-                           const Eigen::Vector3d& a_target = Eigen::Vector3d::Zero());
+                           const Eigen::Vector3d& a_target = Eigen::Vector3d::Zero(),
+                           double max_vel_override = -1.0);
   
   // Calculate optimal duration to respect velocity limits
   double calculate_optimal_duration(const Eigen::Vector3d& p_start,
@@ -140,6 +141,7 @@ private:
   double goto_start_x_, goto_start_y_, goto_start_z_;
   double goto_duration_;
   bool in_goto_transition_;
+  double end_traj_wait_time_;
   
   // Payload offset
   double payload_offset_x_;
@@ -166,6 +168,7 @@ private:
   double landing_x_;
   double landing_y_;
   double landing_start_z_;
+  double landing_max_vel_;
   bool vel_initialized_;
   bool has_final_setpoint_;
   int final_setpoint_hold_count_;
