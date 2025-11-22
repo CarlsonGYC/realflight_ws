@@ -1,5 +1,6 @@
 // Finite-state machine for PX4 offboard control (ROS 2)
 // Author: Yichao Gao 
+// Modified: Added automatic END_TRAJ to LAND transition after 5s wait
 
 #include "offboard_state_machine/offboard_fsm_node.hpp"
 #include "offboard_state_machine/utils.hpp"
@@ -150,6 +151,8 @@ OffboardFSM::OffboardFSM(int drone_id)
 , goto_tol_     (declare_parameter("goto_tol", 0.1))
 , goto_max_vel_    (declare_parameter("goto_max_vel", 0.8))
 , goto_accel_time_ (declare_parameter("goto_accel_time", 2.0))
+, landing_max_vel_ (declare_parameter("landing_max_vel", 0.3))
+, end_traj_wait_time_(declare_parameter("end_traj_wait_time", 5.0))
 , in_goto_transition_(false)
 , goto_duration_(0.0)
 , goto_start_x_(0.0)
@@ -194,8 +197,8 @@ OffboardFSM::OffboardFSM(int drone_id)
   climb_rate_ = takeoff_alt_ / takeoff_time_s_;
 
   RCLCPP_INFO(get_logger(),
-              "FSM drone %d: alt=%.2fm, max_vel=%.2fm/s",
-              drone_id_, takeoff_alt_, goto_max_vel_);
+              "FSM drone %d: alt=%.2fm, goto_vel=%.2fm/s, land_vel=%.2fm/s, land_time=%.1fs, wait=%.1fs",
+              drone_id_, takeoff_alt_, goto_max_vel_, landing_max_vel_, landing_time_s_, end_traj_wait_time_);
 
   // PX4 namespace
   px4_ns_ = (drone_id_ == 0) ? "/fmu/" :
@@ -275,7 +278,11 @@ void OffboardFSM::state_cmd_cb(const std_msgs::msg::Int32::SharedPtr msg)
     landing_y_           = current_y_;
     
     Eigen::Vector3d p_target(current_x_, current_y_, 0.0);
-    start_mjerk_segment(p_target, landing_time_s_);
+    start_mjerk_segment(p_target, landing_time_s_, 
+                       Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+                       landing_max_vel_);
+    RCLCPP_INFO(get_logger(), "Manual LAND from [%.2f, %.2f, %.2f]", 
+                landing_x_, landing_y_, -landing_start_z_);
   }
 
   if (new_state == FsmState::TRAJ) {
@@ -362,7 +369,8 @@ double OffboardFSM::calculate_optimal_duration(
 void OffboardFSM::start_mjerk_segment(const Eigen::Vector3d& p_target,
                                       double initial_duration,
                                       const Eigen::Vector3d& v_target,
-                                      const Eigen::Vector3d& a_target)
+                                      const Eigen::Vector3d& a_target,
+                                      double max_vel_override)
 {
   Eigen::Vector3d p0(current_x_, current_y_, current_z_);
   
@@ -373,6 +381,9 @@ void OffboardFSM::start_mjerk_segment(const Eigen::Vector3d& p_target,
   Eigen::Vector3d v0 = vel_initialized_ ? current_vel_ : Eigen::Vector3d::Zero();
   Eigen::Vector3d a0 = Eigen::Vector3d::Zero();
   
+  // Use override if provided (positive value), otherwise use goto_max_vel_
+  double effective_max_vel = (max_vel_override > 0.0) ? max_vel_override : goto_max_vel_;
+  
   double duration = initial_duration;
   const int MAX_ITERATIONS = 15;
   
@@ -382,23 +393,23 @@ void OffboardFSM::start_mjerk_segment(const Eigen::Vector3d& p_target,
     
     double actual_max_vel = candidate.get_max_velocity();
     
-    if (actual_max_vel <= goto_max_vel_ * 1.05) {
+    if (actual_max_vel <= effective_max_vel * 1.05) {
       active_seg_ = candidate;
       
       RCLCPP_INFO(get_logger(), 
-                  "Seg [%.2f,%.2f,%.2f]→[%.2f,%.2f,%.2f] T=%.2fs v=%.3f",
+                  "Seg [%.2f,%.2f,%.2f]→[%.2f,%.2f,%.2f] T=%.2fs v=%.3f (limit=%.3f)",
                   p0.x(), p0.y(), p0.z(), 
                   p_target.x(), p_target.y(), p_target.z(), 
-                  duration, actual_max_vel);
+                  duration, actual_max_vel, effective_max_vel);
       return;
     }
     
-    double scale = actual_max_vel / (goto_max_vel_ * 0.92);
+    double scale = actual_max_vel / (effective_max_vel * 0.92);
     duration *= scale;
     
     RCLCPP_DEBUG(get_logger(), 
                  "Iter %d: v=%.3f>%.3f, T→%.2fs",
-                 iter, actual_max_vel, goto_max_vel_, duration);
+                 iter, actual_max_vel, effective_max_vel, duration);
   }
   
   active_seg_ = MJerkSegment::build(
@@ -407,7 +418,7 @@ void OffboardFSM::start_mjerk_segment(const Eigen::Vector3d& p_target,
   double final_vel = active_seg_->get_max_velocity();
   RCLCPP_WARN(get_logger(), 
               "Duration failed, T=%.2fs v=%.3f>%.3f",
-              duration, final_vel, goto_max_vel_);
+              duration, final_vel, effective_max_vel);
 }
 
 
@@ -466,7 +477,8 @@ void OffboardFSM::publish_current_setpoint()
   } 
   else if (has_final_setpoint_ && 
            (current_state_ == FsmState::TAKEOFF || 
-            current_state_ == FsmState::GOTO)) {
+            current_state_ == FsmState::GOTO ||
+            current_state_ == FsmState::LAND)) {
     
     sp.position[0] = static_cast<float>(final_position_.x());
     sp.position[1] = static_cast<float>(final_position_.y());
@@ -752,18 +764,43 @@ void OffboardFSM::timer_cb()
     }
     break;
 
-  case FsmState::END_TRAJ:
+  case FsmState::END_TRAJ: {
     if (use_attitude_control_) {
       use_attitude_control_ = false;
       state_start_time_ = now();
-      RCLCPP_INFO(get_logger(), "Traj complete");
+      RCLCPP_INFO(get_logger(), 
+                  "Traj complete, hovering for %.1fs before auto-landing", 
+                  end_traj_wait_time_);
+    }
+    
+    // Check if wait time has elapsed
+    double elapsed = (now() - state_start_time_).seconds();
+    if (elapsed >= end_traj_wait_time_) {
+      // Automatically transition to LAND
+      landing_start_count_ = offb_counter_;
+      landing_start_z_     = -current_z_;
+      landing_x_           = current_x_;  // Use END_TRAJ position
+      landing_y_           = current_y_;  // Use END_TRAJ position
+      
+      // Create polynomial trajectory from current position to ground
+      Eigen::Vector3d p_target(current_x_, current_y_, 0.0);
+      start_mjerk_segment(p_target, landing_time_s_, 
+                         Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+                         landing_max_vel_);
+      
+      current_state_ = FsmState::LAND;
+      RCLCPP_INFO(get_logger(), 
+                  "AUTO LAND from [%.2f, %.2f, %.2f] after %.1fs hover (T=%.1fs, v_max=%.2f)", 
+                  landing_x_, landing_y_, -landing_start_z_, elapsed,
+                  landing_time_s_, landing_max_vel_);
     }
     break;
+  }
 
   case FsmState::LAND: {
     if (!active_seg_.has_value()) {
       double alt = -current_z_;
-      if (alt <= 0.15) {
+      if (alt <= 0.1) {
         RCLCPP_INFO(get_logger(), "Landed");
         current_state_ = FsmState::DONE;
         send_vehicle_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.f, 0.f);
