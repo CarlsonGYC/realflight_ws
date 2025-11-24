@@ -9,14 +9,17 @@
 #include <string>
 #include <map>
 
+// Keep this enum aligned with offboard_state_machine FsmState values
 enum class FsmState {
   INIT = 0,
-  TAKEOFF = 1,
-  HOVER = 2,
-  TRAJ = 3,
-  END_TRAJ = 4,
-  LAND = 5,
-  IDLE = 6
+  ARMING = 1,
+  TAKEOFF = 2,
+  GOTO = 3,
+  HOVER = 4,
+  TRAJ = 5,
+  END_TRAJ = 6,
+  LAND = 7,
+  DONE = 8
 };
 
 struct TrajectoryPoint {
