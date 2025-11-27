@@ -407,9 +407,9 @@ void FollowTrajNode::publish_trajectory_setpoint(
   msg.position[1] = static_cast<float>(y);
   msg.position[2] = static_cast<float>(z);
   
-  // msg.velocity[0] = static_cast<float>(vx);
-  // msg.velocity[1] = static_cast<float>(vy);
-  // msg.velocity[2] = static_cast<float>(vz);
+  msg.velocity[0] = static_cast<float>(vx);
+  msg.velocity[1] = static_cast<float>(vy);
+  msg.velocity[2] = static_cast<float>(vz);
   // msg.velocity[0] = 0.0f;
   // msg.velocity[1] = 0.0f;
   // msg.velocity[2] = 0.0f;
