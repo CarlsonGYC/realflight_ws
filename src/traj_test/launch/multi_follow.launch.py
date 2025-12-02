@@ -107,7 +107,8 @@ def launch_setup(context, *args, **kwargs):
     coordinator_node = Node(
         package='traj_test',
         executable='swarm_coordinator_node',
-        name='swarm_coordinator',
+        # Unique name per drone to avoid name collisions when running on multiple machines
+        name=f'swarm_coordinator_{this_drone_id}',
         namespace='',
         arguments=[str(total_drones)],
         parameters=[{
