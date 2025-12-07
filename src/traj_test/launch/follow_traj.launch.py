@@ -24,8 +24,8 @@ def generate_launch_description():
     
     csv_base_path_arg = DeclareLaunchArgument(
         'csv_base_path',
-        default_value='data/3drone_trajectories_001_-001',
-        description='Base path for CSV trajectory files'
+        default_value='data/3drone_trajectories_new',
+        description='Base path for CSV trajectory files (drone_X_traj_smoothed_100hz.csv)'
     )
     
     timer_period_arg = DeclareLaunchArgument(
@@ -71,7 +71,7 @@ def launch_setup(context, *args, **kwargs):
     drone_id_env = EnvironmentVariable('DRONE_ID', default_value='0')
     
     # Create follow_traj node for this drone
-    csv_path = f"{csv_base_path}/drone_{drone_id_env.perform(context)}_traj.csv"
+    csv_path = f"{csv_base_path}/drone_{drone_id_env.perform(context)}_traj_smoothed_100hz.csv"
     
     node = Node(
         package='traj_test',

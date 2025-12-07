@@ -22,7 +22,7 @@ def read_first_trajectory_point(drone_id: str):
     Returns:
         tuple: (x, y, z) position of the first trajectory point
     """
-    csv_path = Path(f"data/3drone_trajectories_001_-001/drone_{drone_id}_traj.csv")
+    csv_path = Path(f"data/3drone_trajectories_new/drone_{drone_id}_traj_smoothed_100hz.csv")
 
     if not csv_path.exists():
         raise FileNotFoundError(f"Trajectory file not found: {csv_path}")

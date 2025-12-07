@@ -1,213 +1,271 @@
-import pandas as pd
-import numpy as np
+import argparse
+import signal
+import sys
+from pathlib import Path
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 
-# ========== 1. Read CSV ==========
-# Data is in NED frame: x (North), y (East), z (Down)
-df = pd.read_csv("./data/3drone_trajectories_001_-001/drone_2_traj.csv", sep=",")  # change sep if needed
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully."""
+    print("\nExiting...")
+    plt.close("all")
+    sys.exit(0)
 
-time = df["time"].to_numpy()
-x = df["x"].to_numpy()
-y = df["y"].to_numpy()
-z = df["z"].to_numpy()
-vx = df["vx"].to_numpy()
-vy = df["vy"].to_numpy()
-vz = df["vz"].to_numpy()
 
-# ========== 2. Velocity from position (finite difference) ==========
-vx_from_pos = np.gradient(x, time)
-vy_from_pos = np.gradient(y, time)
-vz_from_pos = np.gradient(z, time)
+signal.signal(signal.SIGINT, signal_handler)
 
-# Error between CSV velocity and position-derived velocity
-err_vx = vx - vx_from_pos
-err_vy = vy - vy_from_pos
-err_vz = vz - vz_from_pos
 
-rmse_vx = np.sqrt(np.mean(err_vx**2))
-rmse_vy = np.sqrt(np.mean(err_vy**2))
-rmse_vz = np.sqrt(np.mean(err_vz**2))
+def load_traj(csv_path: Path, label: str):
+    """Load a trajectory CSV and compute finite-difference velocities."""
+    if not csv_path.exists():
+        raise FileNotFoundError(f"{label} CSV not found: {csv_path}")
 
-print("RMSE between CSV velocity and position-derived velocity:")
-print(f"  vx: {rmse_vx:.6e}")
-print(f"  vy: {rmse_vy:.6e}")
-print(f"  vz: {rmse_vz:.6e}")
+    df = pd.read_csv(csv_path, sep=",")
+    time = df["time"].to_numpy()
+    x = df["x"].to_numpy()
+    y = df["y"].to_numpy()
+    z = df["z"].to_numpy()
+    vx = df["vx"].to_numpy()
+    vy = df["vy"].to_numpy()
+    vz = df["vz"].to_numpy()
 
-# ========== 3. Acceleration and jerk from position ==========
-ax_from_pos = np.gradient(vx_from_pos, time)
-ay_from_pos = np.gradient(vy_from_pos, time)
-az_from_pos = np.gradient(vz_from_pos, time)
+    vx_from_pos = np.gradient(x, time)
+    vy_from_pos = np.gradient(y, time)
+    vz_from_pos = np.gradient(z, time)
 
-jx_from_pos = np.gradient(ax_from_pos, time)
-jy_from_pos = np.gradient(ay_from_pos, time)
-jz_from_pos = np.gradient(az_from_pos, time)
+    err_vx = vx - vx_from_pos
+    err_vy = vy - vy_from_pos
+    err_vz = vz - vz_from_pos
 
-# Stack for vector operations (NED)
-a = np.column_stack((ax_from_pos, ay_from_pos, az_from_pos))  # acceleration in NED
-j = np.column_stack((jx_from_pos, jy_from_pos, jz_from_pos))  # jerk in NED
+    rmse_vx = np.sqrt(np.mean(err_vx**2))
+    rmse_vy = np.sqrt(np.mean(err_vy**2))
+    rmse_vz = np.sqrt(np.mean(err_vz**2))
 
-# ========== 4. Attitude from acceleration (NED, z down) ==========
-g = 9.81
-e3 = np.array([0.0, 0.0, 1.0])  # NED down axis
-m = 1.0  # mass, only scales thrust magnitude
+    dt_mean = float(np.mean(np.diff(time)))
 
-# From NED dynamics:  m * a = m * g * e3 - T * R * e3  =>  T * z_b = m (g*e3 - a)
-f_vec = g * e3 - a                   # proportional to T * z_b
-f_norm = np.linalg.norm(f_vec, axis=1)
-eps = 1e-6
-f_norm = np.maximum(f_norm, eps)
+    print(f"{label}: {len(time)} samples, mean dt={dt_mean:.4f} s")
+    print(f"  RMSE(vx): {rmse_vx:.6e}, RMSE(vy): {rmse_vy:.6e}, RMSE(vz): {rmse_vz:.6e}")
 
-# Body z-axis in NED (z_b points down)
-z_b = f_vec / f_norm[:, None]        # (N,3)
+    return {
+        "label": label,
+        "time": time,
+        "x": x,
+        "y": y,
+        "z": z,
+        "vx": vx,
+        "vy": vy,
+        "vz": vz,
+        "vx_from_pos": vx_from_pos,
+        "vy_from_pos": vy_from_pos,
+        "vz_from_pos": vz_from_pos,
+    }
 
-# Choose desired yaw (heading) – still not observable from position alone
-psi_des = 0.0  # rad, heading in NED frame (0 = facing North)
-x_c = np.array([np.cos(psi_des), np.sin(psi_des), 0.0])
-y_c = np.array([-np.sin(psi_des), np.cos(psi_des), 0.0])
 
-# Build rotation matrices R (NED-from-body) for each time step
-R_list = []
-for i in range(len(time)):
-    # x_b is perpendicular to both y_c and z_b
-    x_b = np.cross(y_c, z_b[i])
-    x_b_norm = np.linalg.norm(x_b)
-    if x_b_norm < 1e-6:
-        # Degenerate case; fallback
-        x_b = np.array([1.0, 0.0, 0.0])
-        x_b_norm = 1.0
-    x_b /= x_b_norm
+def compute_dynamics(traj: dict):
+    """Compute accel, jerk, attitude, and body rates from a trajectory."""
+    t = traj["time"]
+    vx_fd = traj["vx_from_pos"]
+    vy_fd = traj["vy_from_pos"]
+    vz_fd = traj["vz_from_pos"]
+    ax_fd = np.gradient(vx_fd, t)
+    ay_fd = np.gradient(vy_fd, t)
+    az_fd = np.gradient(vz_fd, t)
 
-    # y_b = z_b × x_b
-    y_b = np.cross(z_b[i], x_b)
-    y_b /= np.linalg.norm(y_b)
+    jx_fd = np.gradient(ax_fd, t)
+    jy_fd = np.gradient(ay_fd, t)
+    jz_fd = np.gradient(az_fd, t)
 
-    # Columns of R are body axes expressed in NED frame
-    R = np.column_stack((x_b, y_b, z_b[i]))
-    R_list.append(R)
+    # Attitude reconstruction
+    g = 9.81
+    e3 = np.array([0.0, 0.0, 1.0])
+    a_vec = np.column_stack((ax_fd, ay_fd, az_fd))
+    f_vec = g * e3 - a_vec
+    f_norm = np.linalg.norm(f_vec, axis=1)
+    f_norm = np.maximum(f_norm, 1e-6)
+    z_b = f_vec / f_norm[:, None]
 
-R = np.stack(R_list)  # (N,3,3)
+    psi_des = 0.0
+    x_c = np.array([np.cos(psi_des), np.sin(psi_des), 0.0])
+    y_c = np.array([-np.sin(psi_des), np.cos(psi_des), 0.0])
 
-# Extract Euler angles (ZYX convention) relative to NED
-roll  = np.arctan2(R[:, 2, 1], R[:, 2, 2])
-pitch = np.arcsin(-R[:, 2, 0])
-yaw   = np.arctan2(R[:, 1, 0], R[:, 0, 0])
+    R_list = []
+    for zb in z_b:
+        x_b = np.cross(y_c, zb)
+        x_b_norm = np.linalg.norm(x_b)
+        if x_b_norm < 1e-6:
+            x_b = np.array([1.0, 0.0, 0.0])
+            x_b_norm = 1.0
+        x_b /= x_b_norm
+        y_b = np.cross(zb, x_b)
+        y_b /= np.linalg.norm(y_b)
+        R_list.append(np.column_stack((x_b, y_b, zb)))
 
-# ========== 5. Angular velocity from jerk (NED version) ==========
-# f = m (g e3 - a)  =>  f_dot = - m j
-T = m * f_norm
-f_dot = -m * j
-T_dot = np.sum(f_dot * z_b, axis=1)   # since T = f · z_b
+    R = np.stack(R_list)
+    roll = np.arctan2(R[:, 2, 1], R[:, 2, 2])
+    pitch = np.arcsin(-R[:, 2, 0])
+    yaw = np.arctan2(R[:, 1, 0], R[:, 0, 0])
 
-# z_b_dot = (f_dot - T_dot z_b) / T
-z_b_dot = (f_dot - T_dot[:, None] * z_b) / T[:, None]
+    T = f_norm
+    f_dot = -np.column_stack((jx_fd, jy_fd, jz_fd))
+    T_dot = np.sum(f_dot * z_b, axis=1)
+    z_b_dot = (f_dot - T_dot[:, None] * z_b) / T[:, None]
+    omega_world_perp = np.cross(z_b, z_b_dot)
+    omega_body = np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), omega_world_perp)
 
-# Kinematics: z_b_dot = omega × z_b
-# Cross both sides with z_b:
-#   z_b × z_b_dot = z_b × (omega × z_b) = omega - (omega·z_b) z_b
-# This gives the component of omega orthogonal to z_b (yaw rate unobservable)
-omega_world_perp = np.cross(z_b, z_b_dot)
+    traj["ax"] = ax_fd
+    traj["ay"] = ay_fd
+    traj["az"] = az_fd
+    traj["jx"] = jx_fd
+    traj["jy"] = jy_fd
+    traj["jz"] = jz_fd
+    traj["roll"] = roll
+    traj["pitch"] = pitch
+    traj["yaw"] = yaw
+    traj["p"] = omega_body[:, 0]
+    traj["q"] = omega_body[:, 1]
+    traj["r"] = omega_body[:, 2]
+    return traj
 
-# Assume zero yaw rate about body z-axis => omega_world = omega_world_perp
-omega_world = omega_world_perp
 
-# Convert to body frame: omega_body = R^T * omega_world
-omega_body = np.einsum('nij,nj->ni', np.transpose(R, (0, 2, 1)), omega_world)
-p = omega_body[:, 0]  # roll rate
-q = omega_body[:, 1]  # pitch rate
-r = omega_body[:, 2]  # yaw rate (here mostly ~0 by construction)
+def main():
+    parser = argparse.ArgumentParser(description="Compare 20 Hz and 100 Hz trajectories.")
+    parser.add_argument(
+        "--drone-id", type=int, default=0, help="Drone ID to plot (default: 0)"
+    )
+    parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=Path("data/3drone_trajectories_new"),
+        help="Directory containing *_raw_20hz.csv and *_smoothed_100hz.csv files",
+    )
+    args = parser.parse_args()
 
-# ========== 6. Plotting ==========
+    raw_path = args.base_dir / f"drone_{args.drone_id}_traj_raw_20hz.csv"
+    smoothed_path = args.base_dir / f"drone_{args.drone_id}_traj_smoothed_100hz.csv"
 
-# Figure 1: 3D trajectory in NED
-fig1 = plt.figure(figsize=(8, 6))
-ax1 = fig1.add_subplot(111, projection='3d')
-ax1.plot(x, y, z)
-ax1.set_title("3D Trajectory (NED)")
-ax1.set_xlabel("North [m]")
-ax1.set_ylabel("East [m]")
-ax1.set_zlabel("Down [m]")
-ax1.grid(True)
+    traj_raw = load_traj(raw_path, "raw_20hz")
+    traj_smooth = load_traj(smoothed_path, "smoothed_100hz")
+    traj_raw = compute_dynamics(traj_raw)
+    traj_smooth = compute_dynamics(traj_smooth)
 
-# Figure 2: position + velocity comparison
-fig2, axs2 = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
+    # Resample the 20 Hz data onto the 100 Hz timeline to visualize what linear interpolation looks like.
+    t_ref = traj_smooth["time"]
+    raw_resampled = {
+        "x": np.interp(t_ref, traj_raw["time"], traj_raw["x"]),
+        "y": np.interp(t_ref, traj_raw["time"], traj_raw["y"]),
+        "z": np.interp(t_ref, traj_raw["time"], traj_raw["z"]),
+        "vx": np.interp(t_ref, traj_raw["time"], traj_raw["vx"]),
+        "vy": np.interp(t_ref, traj_raw["time"], traj_raw["vy"]),
+        "vz": np.interp(t_ref, traj_raw["time"], traj_raw["vz"]),
+    }
 
-axs2[0].plot(time, x, label="x (North)")
-axs2[0].plot(time, y, label="y (East)")
-axs2[0].plot(time, z, label="z (Down)")
-axs2[0].set_ylabel("Position [m]")
-axs2[0].set_title("Position (NED)")
-axs2[0].legend()
-axs2[0].grid(True)
+    # === 3D trajectory overlay ===
+    fig1 = plt.figure(figsize=(8, 6))
+    ax1 = fig1.add_subplot(111, projection="3d")
+    ax1.plot(traj_raw["x"], traj_raw["y"], traj_raw["z"], label="raw 20 Hz")
+    ax1.plot(traj_smooth["x"], traj_smooth["y"], traj_smooth["z"], label="smoothed 100 Hz")
+    ax1.set_title("3D Trajectory (NED)")
+    ax1.set_xlabel("North [m]")
+    ax1.set_ylabel("East [m]")
+    ax1.set_zlabel("Down [m]")
+    ax1.legend()
+    ax1.grid(True)
 
-axs2[1].plot(time, vx, label="vx (csv)")
-axs2[1].plot(time, vx_from_pos, "--", label="vx (from pos)")
-axs2[1].set_ylabel("vx [m/s]")
-axs2[1].set_title("vx comparison")
-axs2[1].legend()
-axs2[1].grid(True)
+    # === Position vs time ===
+    fig2, axs2 = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    for axis, key in enumerate(["x", "y", "z"]):
+        axs2[axis].plot(traj_raw["time"], traj_raw[key], "C1", label="raw 20 Hz")
+        axs2[axis].plot(traj_smooth["time"], traj_smooth[key], "C0", label="smoothed 100 Hz")
+        axs2[axis].set_ylabel(f"{key} [m]")
+        axs2[axis].grid(True)
+    axs2[0].set_title("Position (NED)")
+    axs2[-1].set_xlabel("time [s]")
+    axs2[0].legend()
 
-axs2[2].plot(time, vy, label="vy (csv)")
-axs2[2].plot(time, vy_from_pos, "--", label="vy (from pos)")
-axs2[2].set_ylabel("vy [m/s]")
-axs2[2].set_title("vy comparison")
-axs2[2].legend()
-axs2[2].grid(True)
+    # === Velocity vs time (CSV vs from position) ===
+    fig3, axs3 = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    vel_keys = [("vx", "vx_from_pos"), ("vy", "vy_from_pos"), ("vz", "vz_from_pos")]
+    labels = ["x", "y", "z"]
+    for axis, (vel_key, vel_pos_key) in enumerate(vel_keys):
+        axs3[axis].plot(traj_raw["time"], traj_raw[vel_key], "C1", label="raw 20 Hz (csv)")
+        axs3[axis].plot(
+            traj_raw["time"], traj_raw[vel_pos_key], "C1--", label="raw 20 Hz (from pos)"
+        )
+        axs3[axis].plot(traj_smooth["time"], traj_smooth[vel_key], "C0", label="smoothed 100 Hz (csv)")
+        axs3[axis].plot(
+            traj_smooth["time"],
+            traj_smooth[vel_pos_key],
+            "C0--",
+            label="smoothed 100 Hz (from pos)",
+        )
+        axs3[axis].set_ylabel(f"v{labels[axis]} [m/s]")
+        axs3[axis].grid(True)
+    axs3[0].set_title("Velocity comparison")
+    axs3[-1].set_xlabel("time [s]")
+    axs3[0].legend()
 
-axs2[3].plot(time, vz, label="vz (csv)")
-axs2[3].plot(time, vz_from_pos, "--", label="vz (from pos)")
-axs2[3].set_ylabel("vz [m/s]")
-axs2[3].set_xlabel("time [s]")
-axs2[3].set_title("vz comparison")
-axs2[3].legend()
-axs2[3].grid(True)
+    # === Resampled 20 Hz vs 100 Hz on a common time grid ===
+    fig4, axs4 = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    for axis, key in enumerate(["x", "y", "z"]):
+        axs4[axis].plot(t_ref, traj_smooth[key], "C0", label="smoothed 100 Hz")
+        axs4[axis].plot(
+            t_ref, raw_resampled[key], "C1--", label="raw 20 Hz resampled (linear interp)"
+        )
+        axs4[axis].set_ylabel(f"{key} [m]")
+        axs4[axis].grid(True)
+    axs4[0].set_title("Raw 20 Hz interpolated to 100 Hz timeline")
+    axs4[-1].set_xlabel("time [s]")
+    axs4[0].legend()
 
-plt.tight_layout()
+    # === Acceleration, jerk, attitude, body rates (using smoothed 100 Hz) ===
+    fig5, axs5 = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    for traj, color, name in [(traj_raw, "C1", "raw 20 Hz"), (traj_smooth, "C0", "smoothed 100 Hz")]:
+        axs5[0].plot(traj["time"], traj["ax"], color, label=f"ax ({name})")
+        axs5[0].plot(traj["time"], traj["ay"], color, linestyle="--", label=f"ay ({name})")
+        axs5[0].plot(traj["time"], traj["az"], color, linestyle=":", label=f"az ({name})")
+    axs5[0].set_ylabel("Acceleration [m/s²]")
+    axs5[0].set_title("Acceleration (from position)")
+    axs5[0].legend()
+    axs5[0].grid(True)
 
-# Figure 3: acceleration and jerk
-fig3, axs3 = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    for traj, color, name in [(traj_raw, "C1", "raw 20 Hz"), (traj_smooth, "C0", "smoothed 100 Hz")]:
+        axs5[1].plot(traj["time"], traj["jx"], color, label=f"jx ({name})")
+        axs5[1].plot(traj["time"], traj["jy"], color, linestyle="--", label=f"jy ({name})")
+        axs5[1].plot(traj["time"], traj["jz"], color, linestyle=":", label=f"jz ({name})")
+    axs5[1].set_ylabel("Jerk [m/s³]")
+    axs5[1].set_xlabel("time [s]")
+    axs5[1].set_title("Jerk (from position)")
+    axs5[1].legend()
+    axs5[1].grid(True)
 
-axs3[0].plot(time, ax_from_pos, label="ax")
-axs3[0].plot(time, ay_from_pos, label="ay")
-axs3[0].plot(time, az_from_pos, label="az")
-axs3[0].set_ylabel("Acceleration [m/s²]")
-axs3[0].set_title("Acceleration (NED, from position)")
-axs3[0].legend()
-axs3[0].grid(True)
+    fig6, axs6 = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    for traj, color, name in [(traj_raw, "C1", "raw 20 Hz"), (traj_smooth, "C0", "smoothed 100 Hz")]:
+        axs6[0].plot(traj["time"], traj["roll"], color, label=f"roll ({name})")
+        axs6[0].plot(traj["time"], traj["pitch"], color, linestyle="--", label=f"pitch ({name})")
+        axs6[0].plot(traj["time"], traj["yaw"], color, linestyle=":", label=f"yaw ({name})")
+    axs6[0].set_ylabel("Angle [rad]")
+    axs6[0].set_title("Attitude (relative to NED)")
+    axs6[0].legend()
+    axs6[0].grid(True)
 
-axs3[1].plot(time, jx_from_pos, label="jx")
-axs3[1].plot(time, jy_from_pos, label="jy")
-axs3[1].plot(time, jz_from_pos, label="jz")
-axs3[1].set_ylabel("Jerk [m/s³]")
-axs3[1].set_xlabel("time [s]")
-axs3[1].set_title("Jerk (NED, from position)")
-axs3[1].legend()
-axs3[1].grid(True)
+    for traj, color, name in [(traj_raw, "C1", "raw 20 Hz"), (traj_smooth, "C0", "smoothed 100 Hz")]:
+        axs6[1].plot(traj["time"], traj["p"], color, label=f"p ({name})")
+        axs6[1].plot(traj["time"], traj["q"], color, linestyle="--", label=f"q ({name})")
+        axs6[1].plot(traj["time"], traj["r"], color, linestyle=":", label=f"r ({name})")
+    axs6[1].set_ylabel("Rate [rad/s]")
+    axs6[1].set_xlabel("time [s]")
+    axs6[1].set_title("Body rates")
+    axs6[1].legend()
+    axs6[1].grid(True)
 
-plt.tight_layout()
+    print("Displaying plots. Press Ctrl+C to exit or close all plot windows.")
+    plt.tight_layout()
+    plt.show(block=True)
 
-# Figure 4: attitude (roll, pitch, yaw) and body rates
-fig4, axs4 = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
-# Attitude
-axs4[0].plot(time, roll,  label="roll [rad]")
-axs4[0].plot(time, pitch, label="pitch [rad]")
-axs4[0].plot(time, yaw,   label="yaw [rad]")
-axs4[0].set_ylabel("Angle [rad]")
-axs4[0].set_title("Attitude (relative to NED)")
-axs4[0].legend()
-axs4[0].grid(True)
-
-# Body rates
-axs4[1].plot(time, p, label="p (roll rate)")
-axs4[1].plot(time, q, label="q (pitch rate)")
-axs4[1].plot(time, r, label="r (yaw rate)")
-axs4[1].set_ylabel("Rate [rad/s]")
-axs4[1].set_xlabel("time [s]")
-axs4[1].set_title("Body rates (p, q, r)")
-axs4[1].legend()
-axs4[1].grid(True)
-
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    main()

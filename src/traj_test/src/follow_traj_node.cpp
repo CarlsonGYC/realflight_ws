@@ -22,7 +22,7 @@ FollowTrajNode::FollowTrajNode(int drone_id, int total_drones)
   // Parameters
   timer_period_ = this->declare_parameter("timer_period", 0.02);
   csv_path_ = this->declare_parameter("csv_path", 
-    "data/3drone_trajectories_001_-001/drone_" + std::to_string(drone_id_) + "_traj.csv");
+    "data/3drone_trajectories_new/drone_" + std::to_string(drone_id_) + "_traj_smoothed_100hz.csv");
   yaw_setpoint_ = this->declare_parameter("yaw_setpoint", 3.1415926);
   
   // Initialize swarm state tracking
