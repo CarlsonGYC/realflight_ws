@@ -19,6 +19,21 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 
+def set_equal_aspect_3d(ax, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray):
+    """Force 3D axes to share the same scale."""
+    x_min, x_max = np.min(xs), np.max(xs)
+    y_min, y_max = np.min(ys), np.max(ys)
+    z_min, z_max = np.min(zs), np.max(zs)
+    max_range = max(x_max - x_min, y_max - y_min, z_max - z_min)
+    half = max_range / 2.0
+    x_mid = (x_max + x_min) / 2.0
+    y_mid = (y_max + y_min) / 2.0
+    z_mid = (z_max + z_min) / 2.0
+    ax.set_xlim(x_mid - half, x_mid + half)
+    ax.set_ylim(y_mid - half, y_mid + half)
+    ax.set_zlim(z_mid - half, z_mid + half)
+
+
 def load_traj(csv_path: Path, label: str):
     """Load a trajectory CSV and compute finite-difference velocities."""
     if not csv_path.exists():
@@ -172,6 +187,7 @@ def main():
     ax1.set_xlabel("North [m]")
     ax1.set_ylabel("East [m]")
     ax1.set_zlabel("Down [m]")
+    set_equal_aspect_3d(ax1, traj_raw["x"], traj_raw["y"], traj_raw["z"])
     ax1.legend()
     ax1.grid(True)
 

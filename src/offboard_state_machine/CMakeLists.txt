@@ -28,8 +28,31 @@ ament_target_dependencies(offboard_fsm_node
   Eigen3
 )
 
+# ---------- synced goto target ----------
+add_executable(offboard_sync_goto_node
+  src/offboard_sync_goto_node.cpp
+  src/offboard_sync_goto_main.cpp
+)
+
+target_compile_features(offboard_sync_goto_node PUBLIC cxx_std_17)
+
+target_include_directories(offboard_sync_goto_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${EIGEN3_INCLUDE_DIRS}
+)
+
+ament_target_dependencies(offboard_sync_goto_node
+  rclcpp
+  std_msgs
+  px4_msgs
+  Eigen3
+)
+
 # ---------- install ----------
 install(TARGETS offboard_fsm_node
+  DESTINATION lib/${PROJECT_NAME})
+install(TARGETS offboard_sync_goto_node
   DESTINATION lib/${PROJECT_NAME})
 
 # Install headers so other packages can use them

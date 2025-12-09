@@ -50,6 +50,17 @@ ament_target_dependencies(swarm_coordinator_node
   std_msgs
 )
 
+add_executable(swarm_goto_coordinator_node
+  src/swarm_goto_coordinator_node.cpp
+  src/swarm_goto_coordinator_main.cpp
+)
+
+ament_target_dependencies(swarm_goto_coordinator_node
+  rclcpp
+  std_msgs
+  px4_msgs
+)
+
 install(DIRECTORY include/
   DESTINATION include
 )
@@ -59,6 +70,7 @@ install(TARGETS
   traj_test_node
   follow_traj_node
   swarm_coordinator_node
+  swarm_goto_coordinator_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
