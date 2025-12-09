@@ -41,12 +41,12 @@ start_tmux_with_recording() {
   # LEFT: traj_test
   tmux send-keys -t "$LEFT_PANE" "cd $WS_DIR" C-m
   tmux send-keys -t "$LEFT_PANE" "source /opt/ros/humble/setup.bash && source $WS_DIR/install/setup.bash" C-m
-  tmux send-keys -t "$LEFT_PANE" "ros2 launch traj_test multi_follow.launch.py" C-m
+  tmux send-keys -t "$LEFT_PANE" "ros2 launch traj_test multi_sync_follow.launch.py" C-m
 
   # RIGHT: swarm_follow (slight delay to let traj_test come up)
   tmux send-keys -t "$RIGHT_PANE" "cd $WS_DIR" C-m
   tmux send-keys -t "$RIGHT_PANE" "sleep 5 && source /opt/ros/humble/setup.bash && source $WS_DIR/install/setup.bash" C-m
-  tmux send-keys -t "$RIGHT_PANE" "ros2 launch offboard_state_machine swarm_follow.launch.py" C-m
+  tmux send-keys -t "$RIGHT_PANE" "ros2 launch offboard_state_machine sync_goto.launch.py" C-m
 
   # RECORD: rosbag
   BAG_DIR="$WS_DIR/rosbags"
