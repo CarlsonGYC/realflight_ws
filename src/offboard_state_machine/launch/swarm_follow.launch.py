@@ -12,17 +12,18 @@ from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
 
-def read_first_trajectory_point(drone_id: str):
+def read_first_trajectory_point(base_dir: str, drone_id: str):
     """
     Read the first point from the drone's trajectory CSV file.
 
     Args:
+        base_dir: Directory containing trajectory CSVs
         drone_id: The drone ID (e.g., '0', '1', '2')
 
     Returns:
         tuple: (x, y, z) position of the first trajectory point
     """
-    csv_path = Path(f"data/3drone_trajectories_new/drone_{drone_id}_traj_smoothed_100hz.csv")
+    csv_path = Path(base_dir) / f"drone_{drone_id}_traj_smoothed_100hz.csv"
 
     if not csv_path.exists():
         raise FileNotFoundError(f"Trajectory file not found: {csv_path}")
@@ -36,7 +37,7 @@ def read_first_trajectory_point(drone_id: str):
         # Read first data row
         first_row = next(csv_reader)
 
-        # Assuming CSV format: x, y, z
+        # Assuming CSV format: time, x, y, z, ...
         x = float(first_row[1])
         y = float(first_row[2])
         z = float(first_row[3])
@@ -47,7 +48,8 @@ def read_first_trajectory_point(drone_id: str):
 def launch_setup(context):
     drone_id_value = LaunchConfiguration('drone_id').perform(context)
     drone_id_int = int(drone_id_value)
-    goto_x, goto_y, goto_z = read_first_trajectory_point(drone_id_value)
+    traj_base_dir = LaunchConfiguration('traj_base_dir').perform(context)
+    goto_x, goto_y, goto_z = read_first_trajectory_point(traj_base_dir, drone_id_value)
 
     # Calculate takeoff altitude from z position (NED frame: negative = up)
     takeoff_altitude = abs(goto_z)
@@ -98,8 +100,14 @@ def generate_launch_description() -> LaunchDescription:
         default_value=EnvironmentVariable('DRONE_ID', default_value='0'),
         description='Drone ID'
     )
+    traj_base_dir_arg = DeclareLaunchArgument(
+        'traj_base_dir',
+        default_value='data/3drone_trajectories_new',
+        description='Directory containing drone_*_traj_smoothed_100hz.csv files'
+    )
 
     return LaunchDescription([
         drone_id_arg,
+        traj_base_dir_arg,
         OpaqueFunction(function=launch_setup),
     ])
