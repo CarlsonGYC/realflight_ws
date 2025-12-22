@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.widgets import Slider
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from mpl_toolkits.mplot3d import Axes3D, proj3d  # noqa: F401
 
 
 def signal_handler(sig, frame):
@@ -75,6 +75,39 @@ def set_equal_aspect_3d(ax, xs: List[np.ndarray], ys: List[np.ndarray], zs: List
     ax.set_zlim(z_mid - half, z_mid + half)
 
 
+def data_radius_to_points(ax, radius_m: float) -> float:
+    """Convert a data-space radius to points based on current axes scaling."""
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    x_mid = 0.5 * (x0 + x1)
+    y_mid = 0.5 * (y0 + y1)
+    p0 = ax.transData.transform((x_mid, y_mid))
+    p1 = ax.transData.transform((x_mid + radius_m, y_mid))
+    pixel_radius = np.hypot(*(p1 - p0))
+    return pixel_radius * 72.0 / ax.figure.dpi
+
+
+def data_radius_to_points_3d(ax, radius_m: float) -> float:
+    """Approximate a 3D data-space radius in points using the current projection."""
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    z0, z1 = ax.get_zlim()
+    x_mid = 0.5 * (x0 + x1)
+    y_mid = 0.5 * (y0 + y1)
+    z_mid = 0.5 * (z0 + z1)
+    x_proj, y_proj, _ = proj3d.proj_transform(x_mid, y_mid, z_mid, ax.get_proj())
+    x_proj_r, y_proj_r, _ = proj3d.proj_transform(
+        x_mid + radius_m,
+        y_mid,
+        z_mid,
+        ax.get_proj(),
+    )
+    p0 = ax.transData.transform((x_proj, y_proj))
+    p1 = ax.transData.transform((x_proj_r, y_proj_r))
+    pixel_radius = np.hypot(*(p1 - p0))
+    return pixel_radius * 72.0 / ax.figure.dpi
+
+
 def plot_trajectories(
     trajectories: List[Tuple[int, Dict[str, np.ndarray]]],
     title_suffix: str,
@@ -100,7 +133,7 @@ def plot_trajectories(
             [np.nan],
             [np.nan],
             marker="o",
-            markersize=25,
+            markersize=1,
             linestyle="None",
             color=color,
         )
@@ -108,7 +141,7 @@ def plot_trajectories(
             [np.nan],
             [np.nan],
             marker="o",
-            markersize=25,
+            markersize=1,
             linestyle="None",
             color=color,
         )
@@ -140,6 +173,14 @@ def plot_trajectories(
     ax_xy.set_aspect("equal", adjustable="datalim")
     ax_xy.legend(ncol=2, fontsize="small")
     ax_xy.grid(True)
+
+    fig.canvas.draw()
+    marker_radius_m = 0.125
+    marker_size_2d = 2.0 * data_radius_to_points(ax_xy, marker_radius_m)
+    marker_size_3d = 2.0 * data_radius_to_points_3d(ax3d, marker_radius_m)
+    for entry in marker_entries:
+        entry["dot2d"].set_markersize(marker_size_2d)
+        entry["dot3d"].set_markersize(marker_size_3d)
 
     all_times = np.concatenate([traj["time"] for _, traj in trajectories])
     t_min = float(np.min(all_times))
