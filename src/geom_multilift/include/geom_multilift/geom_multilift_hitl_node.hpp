@@ -2,7 +2,6 @@
 
 #include "geom_multilift/data_loader_new.hpp"
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
@@ -14,6 +13,7 @@
 #include <Eigen/Geometry>
 #include <map>
 #include <fstream>
+#include <limits>
 #include <vector>
 
 class AccKalmanFilter {
@@ -57,7 +57,6 @@ public:
 
 private:
   void payload_odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg);
-  void sim_pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void odom_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg);
   void local_pos_cb(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
   void lps_setpoint_cb(const px4_msgs::msg::VehicleLocalPositionSetpoint::SharedPtr msg);
@@ -67,7 +66,6 @@ private:
 
   // helpers
   Eigen::Matrix3d hat(const Eigen::Vector3d &v) const;
-  Eigen::Quaterniond quat_from_msg(const geometry_msgs::msg::PoseStamped &msg) const;
   Eigen::Quaterniond quat_from_px4(const px4_msgs::msg::VehicleOdometry &msg) const;
   bool all_ready() const;
 
@@ -84,6 +82,7 @@ private:
                   const Eigen::Vector3d &omega_i,
                   const Eigen::Vector3d &e_qi,
                   const Eigen::Vector3d &e_omega_i);
+  void log_debug(double sim_t);
 
   // parameters
   int drone_id_;
@@ -111,6 +110,10 @@ private:
   Eigen::Matrix<double, 6, Eigen::Dynamic> P_;  // 6 x 3n
   std::ofstream log_file_;
   bool log_enabled_{false};
+  std::ofstream debug_log_file_;
+  bool debug_log_enabled_{false};
+  double debug_log_period_s_{1.0};
+  double last_debug_log_time_s_{std::numeric_limits<double>::quiet_NaN()};
   Eigen::Quaternionf att_sp_prev_;
   bool att_sp_prev_valid_{false};
 
@@ -123,7 +126,6 @@ private:
 
   // ROS handles
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr payload_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sim_pose_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_pos_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>::SharedPtr lps_sub_;
@@ -137,9 +139,8 @@ private:
   // current states
   bool payload_ready_;
   bool odom_ready_;
-  bool sim_pose_ready_;
+  bool local_pos_ready_;
   nav_msgs::msg::Odometry last_payload_odom_;
-  geometry_msgs::msg::PoseStamped last_sim_pose_;
   rclcpp::Time last_payload_stamp_;
   Eigen::Vector3d payload_pos_;
   Eigen::Vector3d payload_vel_;
@@ -157,6 +158,12 @@ private:
   Eigen::Vector3d drone_omega_;
   Eigen::Matrix3d drone_R_;
   Eigen::Vector3d drone_acc_sp_;
+  bool last_local_xy_valid_{false};
+  bool last_local_z_valid_{false};
+  bool last_local_vxy_valid_{false};
+  bool last_local_vz_valid_{false};
+  double last_vec_norm_{std::numeric_limits<double>::quiet_NaN()};
+  double last_u_total_norm_{std::numeric_limits<double>::quiet_NaN()};
 
   // desired states
   Eigen::Vector3d x_d_;
