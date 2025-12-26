@@ -82,6 +82,7 @@ GeomMultiliftHitlNode::GeomMultiliftHitlNode(int drone_id, int total_drones)
 , alpha_gain_(0.10)
 , z_weight_(0.3)
 , thrust_bias_(0.0)
+, thrust_to_weight_ratio_(7.90)
 , slowdown_(1.0)
 , payload_enu_(true)  // assume mocap publishes ENU PoseStamped
 , apply_payload_offset_(true)
@@ -103,6 +104,7 @@ GeomMultiliftHitlNode::GeomMultiliftHitlNode(int drone_id, int total_drones)
   kw_ = this->declare_parameter("kw", kw_);
   z_weight_ = this->declare_parameter("z_weight", z_weight_);
   thrust_bias_ = this->declare_parameter("thrust_bias", thrust_bias_);
+  thrust_to_weight_ratio_ = this->declare_parameter("thrust_to_weight_ratio", thrust_to_weight_ratio_);
   std::string data_root = this->declare_parameter(
     "data_root",
     std::string("data/realflight_traj_new"));
@@ -394,6 +396,18 @@ void GeomMultiliftHitlNode::sim_pose_cb(const geometry_msgs::msg::PoseStamped::S
 }
 
 void GeomMultiliftHitlNode::odom_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg) {
+  if (msg->pose_frame != px4_msgs::msg::VehicleOdometry::POSE_FRAME_NED) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                         "VehicleOdometry pose_frame=%u (expected NED); ignoring attitude update",
+                         msg->pose_frame);
+    return;
+  }
+  if (msg->velocity_frame != px4_msgs::msg::VehicleOdometry::VELOCITY_FRAME_NED &&
+      msg->velocity_frame != px4_msgs::msg::VehicleOdometry::VELOCITY_FRAME_UNKNOWN) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                         "VehicleOdometry velocity_frame=%u (expected NED); velocity not used",
+                         msg->velocity_frame);
+  }
   drone_omega_ = Eigen::Vector3d(msg->angular_velocity[0], msg->angular_velocity[1], msg->angular_velocity[2]);
   drone_R_ = quat_from_px4(*msg).toRotationMatrix();
   odom_ready_ = true;
@@ -610,7 +624,7 @@ void GeomMultiliftHitlNode::run_control(double sim_t) {
   att_sp_prev_valid_ = true;
 
   double f_i = -u_total.dot(drone_R_ * Eigen::Vector3d(0,0,1));
-  double norm = -f_i / (7.90 * m_drones_ * 9.81) - thrust_bias_;
+  double norm = -f_i / (thrust_to_weight_ratio_ * m_drones_ * 9.81) - thrust_bias_;
   norm = std::clamp(norm, -1.0, -0.1);
 
   px4_msgs::msg::VehicleAttitudeSetpoint att;

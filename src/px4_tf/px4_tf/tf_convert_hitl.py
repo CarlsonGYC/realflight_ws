@@ -10,6 +10,8 @@ px4_world_tf_hitl.py
 -------------------------------------------------
 """
 
+from copy import deepcopy
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped, PoseStamped
@@ -88,7 +90,8 @@ class PX4WorldTFHitl(Node):
     def __init__(self):
         super().__init__('px4_world_tf_hitl')
 
-        self.drones = DataLoader().num_drones
+        # self.drones = DataLoader().num_drones
+        self.drones = 3
         self.namespaces = ['', '/px4_1', '/px4_2', '/px4_3', '/px4_4', '/px4_5', '/px4_6']
         self.publish_rate_hz = 250.0
         self.origin_mode = self.declare_parameter('origin_mode', 'centroid').value
@@ -131,7 +134,7 @@ class PX4WorldTFHitl(Node):
     def _store_init(self, msg: TransformStamped, idx: int):
         if self.init_tf[idx] is not None:
             return
-        self.init_tf[idx] = msg
+        self.init_tf[idx] = deepcopy(msg)
         self._try_compute_origin()
         self._broadcast_static_for_idx(idx)
 
@@ -183,7 +186,10 @@ class PX4WorldTFHitl(Node):
         static_tf.header.stamp = self.get_clock().now().to_msg()
         static_tf.header.frame_id = 'world'
         static_tf.child_frame_id = f'px4_{idx}_frame'
-        static_tf.transform = self.init_tf[idx].transform
+        static_tf.transform.rotation.x = self.init_tf[idx].transform.rotation.x
+        static_tf.transform.rotation.y = self.init_tf[idx].transform.rotation.y
+        static_tf.transform.rotation.z = self.init_tf[idx].transform.rotation.z
+        static_tf.transform.rotation.w = self.init_tf[idx].transform.rotation.w
         static_tf.transform.translation.x = init_tr.x + ox
         static_tf.transform.translation.y = init_tr.y + oy
         static_tf.transform.translation.z = init_tr.z + oz

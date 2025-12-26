@@ -4,6 +4,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/msg/vehicle_local_position_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_attitude_setpoint.hpp>
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
@@ -56,6 +57,7 @@ public:
 private:
   void payload_pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
   void odom_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg);
+  void local_pos_cb(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg);
   void lps_setpoint_cb(const px4_msgs::msg::VehicleLocalPositionSetpoint::SharedPtr msg);
   void state_cb(const std_msgs::msg::Int32::SharedPtr msg);
   void swarm_state_cb(const std_msgs::msg::Int32::SharedPtr msg, int other);
@@ -94,6 +96,7 @@ private:
   double alpha_gain_;
   double z_weight_;
   double thrust_bias_;
+  double thrust_to_weight_ratio_;
   double slowdown_;
   bool payload_enu_;
   bool apply_payload_offset_;
@@ -119,6 +122,7 @@ private:
   // ROS handles
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr payload_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_pos_sub_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>::SharedPtr lps_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr state_sub_;
   std::vector<rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr> swarm_subs_;
@@ -130,6 +134,7 @@ private:
   // current states
   bool payload_ready_;
   bool odom_ready_;
+  bool local_pos_ready_;
   geometry_msgs::msg::PoseStamped last_payload_pose_;
   rclcpp::Time last_payload_stamp_;
   Eigen::Vector3d payload_pos_;

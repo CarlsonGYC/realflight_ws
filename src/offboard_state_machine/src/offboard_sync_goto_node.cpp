@@ -325,9 +325,14 @@ void OffboardSyncGoto::start_mjerk_segment(const Eigen::Vector3d& p_target,
     return;
   }
 
+  static_cast<void>(v_target);
+  static_cast<void>(a_target);
+
   Eigen::Vector3d p0(current_x_, current_y_, current_z_);
+  const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+  // Position-only minimum-jerk keeps a straight-line path in 3D.
   active_seg_ = SyncMJerkSegment::build(
-      p0, current_vel_, Eigen::Vector3d::Zero(), p_target, v_target, a_target, duration, now());
+      p0, zero, zero, p_target, zero, zero, duration, now());
   has_final_setpoint_ = false;
   final_setpoint_hold_count_ = 0;
 }
@@ -341,7 +346,7 @@ void OffboardSyncGoto::publish_offboard_mode()
     m.position     = true;
     m.velocity     = true;
     m.acceleration = true;
-    m.attitude     = false;
+    m.attitude     = true;
     m.body_rate    = false;
   } else if (has_active_seg) {
     m.position     = true;

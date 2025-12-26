@@ -11,6 +11,7 @@
     kw: 3.4
     z_weight: 0.0
     thrust_bias: 0.0
+    thrust_to_weight_ratio: 7.90
     alpha_gain: 0.0
     payload_is_enu: true
     log_path: ""

@@ -82,6 +82,7 @@ GeomMultiliftRealflightNode::GeomMultiliftRealflightNode(int drone_id, int total
 , alpha_gain_(0.10)
 , z_weight_(0.3)
 , thrust_bias_(0.0)
+, thrust_to_weight_ratio_(7.90)
 , slowdown_(1.0)
 , payload_enu_(true)  // assume mocap publishes ENU PoseStamped
 , apply_payload_offset_(true)
@@ -91,6 +92,7 @@ GeomMultiliftRealflightNode::GeomMultiliftRealflightNode(int drone_id, int total
 , traj_time_init_(false)
 , payload_ready_(false)
 , odom_ready_(false)
+, local_pos_ready_(false)
 , current_state_(FsmState::INIT)
 , payload_omega_init_(false)
 {
@@ -102,6 +104,7 @@ GeomMultiliftRealflightNode::GeomMultiliftRealflightNode(int drone_id, int total
   kw_ = this->declare_parameter("kw", kw_);
   z_weight_ = this->declare_parameter("z_weight", z_weight_);
   thrust_bias_ = this->declare_parameter("thrust_bias", thrust_bias_);
+  thrust_to_weight_ratio_ = this->declare_parameter("thrust_to_weight_ratio", thrust_to_weight_ratio_);
   std::string data_root = this->declare_parameter(
     "data_root",
     std::string("data/realflight_traj_new"));
@@ -183,6 +186,10 @@ GeomMultiliftRealflightNode::GeomMultiliftRealflightNode(int drone_id, int total
   odom_sub_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(
     px4_ns + "out/vehicle_odometry", rclcpp::SensorDataQoS(),
     std::bind(&GeomMultiliftRealflightNode::odom_cb, this, _1));
+
+  local_pos_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
+    px4_ns + "out/vehicle_local_position", rclcpp::SensorDataQoS(),
+    std::bind(&GeomMultiliftRealflightNode::local_pos_cb, this, _1));
 
   lps_sub_ = this->create_subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>(
     px4_ns + "out/vehicle_local_position_setpoint", rclcpp::SensorDataQoS(),
@@ -364,11 +371,27 @@ void GeomMultiliftRealflightNode::payload_pose_cb(const geometry_msgs::msg::Pose
 }
 
 void GeomMultiliftRealflightNode::odom_cb(const px4_msgs::msg::VehicleOdometry::SharedPtr msg) {
-  drone_pos_ = Eigen::Vector3d(msg->position[0], msg->position[1], msg->position[2]);
-  drone_vel_ = Eigen::Vector3d(msg->velocity[0], msg->velocity[1], msg->velocity[2]);
+  if (msg->pose_frame != px4_msgs::msg::VehicleOdometry::POSE_FRAME_NED) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                         "VehicleOdometry pose_frame=%u (expected NED); ignoring attitude update",
+                         msg->pose_frame);
+    return;
+  }
+  if (msg->velocity_frame != px4_msgs::msg::VehicleOdometry::VELOCITY_FRAME_NED &&
+      msg->velocity_frame != px4_msgs::msg::VehicleOdometry::VELOCITY_FRAME_UNKNOWN) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                         "VehicleOdometry velocity_frame=%u (expected NED); velocity not used",
+                         msg->velocity_frame);
+  }
   drone_omega_ = Eigen::Vector3d(msg->angular_velocity[0], msg->angular_velocity[1], msg->angular_velocity[2]);
   drone_R_ = quat_from_px4(*msg).toRotationMatrix();
   odom_ready_ = true;
+}
+
+void GeomMultiliftRealflightNode::local_pos_cb(const px4_msgs::msg::VehicleLocalPosition::SharedPtr msg) {
+  drone_pos_ = Eigen::Vector3d(msg->x, msg->y, msg->z);
+  drone_vel_ = Eigen::Vector3d(msg->vx, msg->vy, msg->vz);
+  local_pos_ready_ = true;
 }
 
 void GeomMultiliftRealflightNode::lps_setpoint_cb(const px4_msgs::msg::VehicleLocalPositionSetpoint::SharedPtr msg) {
@@ -576,7 +599,7 @@ void GeomMultiliftRealflightNode::run_control(double sim_t) {
   att_sp_prev_valid_ = true;
 
   double f_i = -u_total.dot(drone_R_ * Eigen::Vector3d(0,0,1));
-  double norm = -f_i / (7.90 * m_drones_ * 9.81) - thrust_bias_;
+  double norm = -f_i / (thrust_to_weight_ratio_ * m_drones_ * 9.81) - thrust_bias_;
   norm = std::clamp(norm, -1.0, -0.1);
 
   px4_msgs::msg::VehicleAttitudeSetpoint att;
@@ -605,9 +628,9 @@ void GeomMultiliftRealflightNode::run_control(double sim_t) {
 }
 
 void GeomMultiliftRealflightNode::timer_cb() {
-  if (!payload_ready_ || !odom_ready_) {
+  if (!payload_ready_ || !odom_ready_ || !local_pos_ready_) {
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "Waiting for payload pose and odometry");
+                         "Waiting for payload pose, PX4 odometry, and local position");
     return;
   }
 

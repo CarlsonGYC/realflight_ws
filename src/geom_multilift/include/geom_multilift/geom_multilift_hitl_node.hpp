@@ -98,6 +98,7 @@ private:
   double alpha_gain_;
   double z_weight_;
   double thrust_bias_;
+  double thrust_to_weight_ratio_;
   double slowdown_;
   bool payload_enu_;
   bool apply_payload_offset_;
