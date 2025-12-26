@@ -75,6 +75,7 @@ add_executable(geom_multilift_hitl_node
 ament_target_dependencies(geom_multilift_hitl_node
   rclcpp
   geometry_msgs
+  nav_msgs
   px4_msgs
   std_msgs
 )

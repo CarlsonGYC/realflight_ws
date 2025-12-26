@@ -2,7 +2,7 @@
   ros__parameters:
     data_root: "data/realflight_traj_new"
     timer_period: 0.01
-    payload_pose_topic: "/vrpn_mocap/multilift_payload/pose"
+    payload_odom_topic: "/payload_odom"
     l: 1.0
     payload_mass: 1.5
     payload_radius: 0.25

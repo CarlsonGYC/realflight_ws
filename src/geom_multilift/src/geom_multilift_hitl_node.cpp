@@ -108,9 +108,15 @@ GeomMultiliftHitlNode::GeomMultiliftHitlNode(int drone_id, int total_drones)
     std::string("data/realflight_traj_new"));
   alpha_gain_ = this->declare_parameter("alpha_gain", alpha_gain_);
   std::string log_path = this->declare_parameter("log_path", std::string(""));
+  std::string payload_odom_topic = this->declare_parameter(
+    "payload_odom_topic",
+    std::string(""));
   std::string payload_pose_topic = this->declare_parameter(
     "payload_pose_topic",
-    std::string("/vrpn_mocap/multilift_payload/pose"));
+    std::string("/payload_odom"));
+  if (payload_odom_topic.empty()) {
+    payload_odom_topic = payload_pose_topic;
+  }
   apply_payload_offset_ = this->declare_parameter("apply_payload_offset", apply_payload_offset_);
 
   // build transforms
@@ -177,8 +183,9 @@ GeomMultiliftHitlNode::GeomMultiliftHitlNode(int drone_id, int total_drones)
   drone_acc_sp_.setZero();
 
   // subscriptions
-  payload_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-    payload_pose_topic, 10, std::bind(&GeomMultiliftHitlNode::payload_pose_cb, this, _1));
+  payload_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+    payload_odom_topic, rclcpp::SensorDataQoS(),
+    std::bind(&GeomMultiliftHitlNode::payload_odom_cb, this, _1));
 
   // Simulation pose uses 1-indexed topics: position_drone_1 ... position_drone_N
   std::string sim_topic = "/simulation/position_drone_" + std::to_string(drone_id_ + 1);
@@ -298,14 +305,19 @@ bool GeomMultiliftHitlNode::all_ready() const {
   return true;
 }
 
-void GeomMultiliftHitlNode::payload_pose_cb(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+void GeomMultiliftHitlNode::payload_odom_cb(const nav_msgs::msg::Odometry::SharedPtr msg) {
   double dt = payload_ready_
     ? (rclcpp::Time(msg->header.stamp) - last_payload_stamp_).seconds()
     : dt_nom_;
   if (dt <= 0.0) dt = dt_nom_;
 
-  Eigen::Vector3d meas(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
-  Eigen::Quaterniond q_raw = quat_from_msg(*msg);
+  Eigen::Vector3d meas(msg->pose.pose.position.x,
+                       msg->pose.pose.position.y,
+                       msg->pose.pose.position.z);
+  Eigen::Quaterniond q_raw(msg->pose.pose.orientation.w,
+                           msg->pose.pose.orientation.x,
+                           msg->pose.pose.orientation.y,
+                           msg->pose.pose.orientation.z);
   // Enforce quaternion sign continuity for the DDP "direct subtraction" error.
   // q and -q represent the same rotation, but subtraction is not sign-invariant.
   // For your use-case the desired payload attitude is identity, so keep w >= 0
@@ -365,7 +377,7 @@ void GeomMultiliftHitlNode::payload_pose_cb(const geometry_msgs::msg::PoseStampe
   payload_q_ = q;
   payload_R_ = R_curr;
 
-  last_payload_pose_ = *msg;
+  last_payload_odom_ = *msg;
   last_payload_stamp_ = msg->header.stamp;
   payload_ready_ = true;
 }
@@ -620,7 +632,7 @@ void GeomMultiliftHitlNode::run_control(double sim_t) {
 void GeomMultiliftHitlNode::timer_cb() {
   if (!payload_ready_ || !odom_ready_ || !sim_pose_ready_) {
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "Waiting for payload pose, PX4 odometry, and sim pose");
+                         "Waiting for payload odom, PX4 odometry, and sim pose");
     return;
   }
 

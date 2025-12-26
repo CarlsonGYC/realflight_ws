@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Launch the HITL geometric multilift controller with swarm GOTO/TRAJ coordinator.
-Position comes from /simulation/position_drone_<i>, attitude/body rates from PX4 odometry.
+Payload pose comes from /payload_odom, drone position from /simulation/position_drone_<i>,
+and attitude/body rates from PX4 odometry.
 """
 
 import os
